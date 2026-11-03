@@ -1,0 +1,12 @@
+bin/
+obj/
+Release/
+Backup*/
+.vs/
+*.user
+*.suo
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
