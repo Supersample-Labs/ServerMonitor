@@ -2,15 +2,6 @@
 
 A .NET 10 Windows Forms monitor for TCP/UDP ports and TLS certificate expirations, and combined HTTPS website health. The Windows x64 release is self-contained: no separate .NET runtime installation is required.
 
-## Upgrade from Port Sentinel
-
-1. Exit the old tray app. If its Windows service is installed, remove that service using the old app first. Server Monitor uses its own service entry and will ask you to remove the earlier one before it runs.
-2. Extract Server Monitor into a new writable folder.
-3. To retain your settings, copy the old `PortSentinel.db` into that folder **before first launch**, keeping its old filename. Stop the old app/service before copying and retain its journal if present after an unclean shutdown.
-4. On first launch, Server Monitor makes a new `ServerMonitor.db` using SQLite backup, upgrades the schema, clears stale worker ownership, and keeps the checks and SMTP settings. It retains the old database. SMTP passwords continue to work on the same Windows computer.
-5. Existing certificate-only monitors remain certificate-only. Edit a website's monitor and choose **HTTPS** to combine connection, certificate, and web response checks.
-6. Install the new service and re-enable tray startup if desired. If you had enabled the old tray app at sign-in, disable that option in the old app to avoid launching both versions.
-
 ## Start
 
 1. Extract the ZIP to a writable local folder. Run `ServerMonitor.exe`.
