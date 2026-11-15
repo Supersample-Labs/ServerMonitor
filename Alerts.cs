@@ -41,7 +41,11 @@ public static class Alerts
         if(!string.IsNullOrWhiteSpace(s.Username))await client.AuthenticateAsync(s.Username,Secret.Unprotect(s.ProtectedPassword),deadline.Token);
         await client.SendAsync(msg,deadline.Token);await client.DisconnectAsync(true,deadline.Token);
     }
-    public static bool SeverityAllowed(MonitorCheck c,CheckResult r) => c.Kind!=CheckKind.SNMP || c.Snmp.MinimumSeverity!="None" && (r.Status!=Health.Warning || c.Snmp.MinimumSeverity=="Warning");
+    public static bool SeverityAllowed(MonitorCheck c,CheckResult r)
+    {
+        string minimum=c.Kind switch {CheckKind.SNMP=>c.Snmp.MinimumSeverity,CheckKind.WindowsServer=>c.Windows.MinimumSeverity,_=>"Warning"};
+        return minimum!="None" && (r.Status!=Health.Warning || minimum=="Warning");
+    }
     public static bool ShouldSend(MonitorCheck c,CheckResult r,SmtpSettings s,DateTimeOffset now)
     {
         if(!s.Enabled || !SeverityAllowed(c,r))return false;

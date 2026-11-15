@@ -1,6 +1,6 @@
 # Server Monitor
 
-A .NET 10 Windows Forms monitor for TCP/UDP ports and TLS certificate expirations, and combined HTTPS website health. The Windows x64 release is self-contained: no separate .NET runtime installation is required.
+A .NET 10 Windows Forms monitor for TCP/UDP ports, TLS certificates, HTTPS websites, SNMP values, and Windows server CPU, memory, and disk usage over WinRM. The Windows x64 release is self-contained: no separate .NET runtime installation is required.
 
 ## Start
 
@@ -145,3 +145,32 @@ A simple catalog uses definition OIDs without instance suffixes; `scalar: true` 
 ```
 
 SNMP communication and discovery use the MIT-licensed [SharpSnmpLib](https://github.com/lextudio/sharpsnmplib), bundled in the executable. The app currently exposes v2c configuration; v1/v3 and traps are not enabled. Common metric definitions follow [RFC 2790](https://www.rfc-editor.org/rfc/rfc2790.html) and [RFC 2863](https://www.rfc-editor.org/rfc/rfc2863.html).
+
+## Windows Server resources over WinRM
+
+Choose **Add monitor > Windows Server (WinRM)**. Enter a server hostname, choose the WinRM transport/port, and configure the authentication account. Set independent **CPU used %**, **Memory used %**, and **Disk used %** warning/critical thresholds. Each metric can be disabled; at least one must remain enabled. Defaults are warning at 80% used and critical at 90% used. Threshold equality triggers that severity. The highest severity among the enabled readings determines the monitor status; details list all evaluated readings.
+
+Set **Drive letters** to `*` to monitor all fixed drives returned by `Win32_LogicalDisk`, or enter a comma-separated list such as `C:, D:`. Disk thresholds apply to each selected drive individually. A requested missing drive, missing CPU/memory value, invalid capacity, authentication error, or failed query is an unhealthy error rather than a healthy zero. Drive-letter volumes are supported; mount-point-only volumes are outside this check's scope.
+
+Select **Test Windows resources** to query the form's current settings before saving. The test shows readings/errors without saving a monitor or sending email. New Windows checks default to a 30-second total timeout; this includes starting the local helper, connecting, and running the selected queries. Monitoring samples the current values on each interval; thresholds do not require a sustained breach or calculate historical averages.
+
+### Connection and credentials
+
+- **HTTPS** defaults to port **5986** and validates the server certificate, including its trust and hostname. Use the server's matching DNS name. There is no certificate-validation bypass.
+- **HTTP** defaults to port **5985** and uses Windows Negotiate authentication with normal WinRM message protection. Basic authentication and unencrypted WinRM payloads are not enabled by the app. Domain Kerberos setups generally work best with DNS names; IP addresses/workgroups require an appropriate existing WinRM trust/authentication configuration.
+- **Use worker's Windows account** authenticates as the active desktop or Windows service worker. The app's service runs as LocalService by default, which normally has no usable remote account credentials. Use an explicit Windows account for unattended remote checks, or an appropriately configured service identity.
+- **Use a specific Windows account** accepts `DOMAIN\user`, `user@domain`, or `SERVER\user` as appropriate for your environment. Passwords use the same machine DPAPI protection as SMTP passwords. Leaving the password blank when editing preserves the saved password for the unchanged username. Changing the username requires a password. Selecting the worker account removes the stored explicit credential when saved. Moving the database to another computer requires re-entering passwords.
+
+The target server must already have a working WinRM listener, network/firewall access from the monitoring computer, and an account authorized to read `root/cimv2` WMI/CIM data and the performance classes. An administrator should configure the listener, certificate, and least-privilege remote permissions according to your environment. This app does not enable remote management, open firewall rules, change TrustedHosts, or grant permissions automatically. Use the test button to diagnose access before enabling unattended monitoring. Refer to Microsoft's [CIM session documentation](https://learn.microsoft.com/en-us/powershell/module/cimcmdlets/new-cimsession?view=powershell-5.1) and [WinRM authentication documentation](https://learn.microsoft.com/en-us/windows/win32/winrm/authentication-for-remote-connections).
+
+### Measurements and alerts
+
+| Metric | Measurement |
+| --- | --- |
+| CPU | `_Total.PercentProcessorTime` from `Win32_PerfFormattedData_PerfOS_Processor`; the provider's formatted CPU utilization sample. |
+| Memory | Physical memory used: `100 * (1 - FreePhysicalMemory / TotalVisibleMemorySize)` from `Win32_OperatingSystem`. This is not committed/virtual memory usage. |
+| Disk | Used capacity per fixed logical drive: `100 * (1 - FreeSpace / Size)` from `Win32_LogicalDisk` with `DriveType = 3`. |
+
+**Minimum severity** filters both email and desktop notifications: Warning includes warning and critical, Critical suppresses warning notifications, and None disables notifications for this monitor. Authentication, query, and timeout failures alert at either Warning or Critical minimum. Current health/history remain visible regardless. Existing SMTP retry, reminder, and recovery settings apply to the monitor's aggregate status. If the failing component changes while overall severity stays the same, its details update and the existing reminder interval applies; create separate monitors with only one enabled metric if independent alert transitions are needed.
+
+The monitor computer requires built-in **Windows PowerShell 5.1** and its CIM cmdlets. Each check starts a hidden local helper with fixed read-only queries and passes settings/credentials through stdin; it does not execute remote PowerShell scripts. Helper processes are canceled on timeout or shutdown. No additional PowerShell module, SNMP agent, or .NET installation is needed for the published self-contained application. Resource/serialization tests use fixtures and a mocked CIM session; a real remote server and its authentication/listener configuration must be validated with the test button in your environment.

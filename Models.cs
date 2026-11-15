@@ -1,6 +1,6 @@
 namespace ServerMonitor;
 
-public enum CheckKind { TCP, UDP, Certificate, HTTPS, PrivateCertificate, SNMP }
+public enum CheckKind { TCP, UDP, Certificate, HTTPS, PrivateCertificate, SNMP, WindowsServer }
 public enum Health { Pending, Healthy, Down, NoResponse, Expiring, Expired, InvalidCertificate, Error, HttpError, Warning, Critical }
 public sealed record MonitorCheck
 {
@@ -22,6 +22,7 @@ public sealed record MonitorCheck
     public int HttpStatusMax { get; set; } = 399;
     public DateTimeOffset? ManualExpiration { get; set; }
     public SnmpSettings Snmp { get; set; } = new();
+    public WindowsServerSettings Windows { get; set; } = new();
     public long Revision { get; set; }
     public Health Status { get; set; } = Health.Pending;
     public string Detail { get; set; } = "Not checked yet";
@@ -45,6 +46,24 @@ public sealed record SnmpSettings
     public decimal Warning { get; set; } = 80;
     public decimal Critical { get; set; } = 90;
     public bool LowerIsWorse { get; set; }
+    public string MinimumSeverity { get; set; } = "Warning";
+}
+public sealed record ResourceThreshold
+{
+    public bool Enabled { get; set; } = true;
+    public decimal Warning { get; set; } = 80;
+    public decimal Critical { get; set; } = 90;
+}
+public sealed record WindowsServerSettings
+{
+    public bool UseSsl { get; set; } = true;
+    public bool UseWorkerAccount { get; set; } = true;
+    public string Username { get; set; } = "";
+    public string ProtectedPassword { get; set; } = "";
+    public ResourceThreshold Cpu { get; set; } = new();
+    public ResourceThreshold Memory { get; set; } = new();
+    public ResourceThreshold Disk { get; set; } = new();
+    public string Drives { get; set; } = "*";
     public string MinimumSeverity { get; set; } = "Warning";
 }
 public sealed record SmtpSettings

@@ -22,6 +22,7 @@ public static class SelfTests
     {
         var now=DateTimeOffset.UtcNow;var clear=SslPolicyErrors.None;
         await SnmpTests(folder,now);
+        await WindowsTests(folder,now);
         Assert(Probes.CertificateResult(now.AddDays(31),now.AddDays(-1),clear,now,1).Status==Health.Healthy,"Certificate >30 days is green");
         Assert(Probes.CertificateResult(now.AddDays(30),now.AddDays(-1),clear,now,1).Status==Health.Expiring,"Certificate exactly 30 days is red");
         Assert(Probes.CertificateResult(now.AddSeconds(-1),now.AddDays(-1),clear,now,1).Status==Health.Expired,"Expired certificate is red");
@@ -71,9 +72,9 @@ public static class SelfTests
         var notified=edited with{LastAlertStatus="Down",LastAlert=now,LastAttempt=now};Assert(!Alerts.ShouldSend(notified,down,smtp,now.AddHours(1)),"Delivered alert is deduplicated");Assert(Alerts.ShouldSend(notified,down,smtp,now.AddHours(24)),"Reminder after configured interval");Assert(Alerts.ShouldSend(notified,new(Health.Healthy,"OK",now),smtp,now.AddMinutes(1)),"Recovery email transition");Assert(!Alerts.ShouldSend(edited with{LastAttempt=now},down,smtp,now.AddMinutes(1)),"Failed email retry is throttled");
         store.Backup(Path.Combine(folder,"backup.db"));Assert(new Store(Path.Combine(folder,"backup.db")).Checks().Count==1,"SQLite consistent backup");
         var old=new Store(Path.Combine(folder,"legacy.db"));old.Initialize();old.Save(new(){Name="Legacy certificate",Host="localhost",Kind=CheckKind.Certificate});
-        using(var db=old.Open()){using var command=db.CreateCommand();command.CommandText="ALTER TABLE Checks DROP COLUMN SnmpJson;ALTER TABLE Events DROP COLUMN Notify;ALTER TABLE Checks DROP COLUMN ManualExpiration;ALTER TABLE Checks DROP COLUMN HttpPath;ALTER TABLE Checks DROP COLUMN HttpStatusMin;ALTER TABLE Checks DROP COLUMN HttpStatusMax;PRAGMA user_version=1;";command.ExecuteNonQuery();}
+        using(var db=old.Open()){using var command=db.CreateCommand();command.CommandText="ALTER TABLE Checks DROP COLUMN WindowsJson;ALTER TABLE Checks DROP COLUMN SnmpJson;ALTER TABLE Events DROP COLUMN Notify;ALTER TABLE Checks DROP COLUMN ManualExpiration;ALTER TABLE Checks DROP COLUMN HttpPath;ALTER TABLE Checks DROP COLUMN HttpStatusMin;ALTER TABLE Checks DROP COLUMN HttpStatusMax;PRAGMA user_version=1;";command.ExecuteNonQuery();}
         old.Initialize();var migrated=old.Checks().Single();
-        Assert(migrated.Kind==CheckKind.Certificate && migrated.Name=="Legacy certificate" && migrated.HttpPath=="/" && migrated.HttpStatusMax==399 && migrated.ManualExpiration==null && migrated.Snmp==new SnmpSettings(),"Existing database migrates without changing certificate-only monitors");
+        Assert(migrated.Kind==CheckKind.Certificate && migrated.Name=="Legacy certificate" && migrated.HttpPath=="/" && migrated.HttpStatusMax==399 && migrated.ManualExpiration==null && migrated.Snmp==new SnmpSettings() && migrated.Windows==new WindowsServerSettings(),"Existing database migrates without changing certificate-only monitors");
         var transfer=Path.Combine(folder,"upgrade");Directory.CreateDirectory(transfer);store.Backup(Path.Combine(transfer,"PortSentinel.db"));Paths.ImportLegacyDatabase(transfer);
         var imported=new Store(Path.Combine(transfer,"ServerMonitor.db"));
         Assert(imported.Checks().Count==1 && imported.Settings().Host==smtp.Host && imported.LeaseOwner()=="No active worker","Renamed database import preserves checks and SMTP settings without stale worker ownership");
@@ -131,7 +132,75 @@ public static class SelfTests
         using(var settings=new SmtpPanel(store))
         using(var window=new MainForm(store,false))
             Assert(dialog.Controls.Count>0 && settings.Controls.Count>0 && window.Controls.Count>0,"WinForms monitor, SMTP, and dashboard constructors initialize successfully");
+        // Construct WinForms only after asynchronous checks: controls may install a synchronization context without a message loop.
+        var windowsSaved=new WindowsServerSettings{UseWorkerAccount=false,Username=@"DOMAIN\monitor",ProtectedPassword=Secret.Protect("test-only-password")};
+        using(var panel=new WindowsSettingsPanel(windowsSaved))Assert(panel.Value()==windowsSaved,"Editing Windows settings preserves the saved password when blank");
+        using(var windowsDialog=new CheckDialog(new(){Kind=CheckKind.WindowsServer,Host="server.example.test",Windows=windowsSaved}))Assert(windowsDialog.Controls.Count>0,"Windows server monitor dialog initializes");
+        using(var picker=new SnmpMetricDialog(new Store(Path.Combine(folder,"snmp.db")),"127.0.0.1",161,"public",1))Assert(picker.Controls.Count>0,"SNMP metric picker initializes with persisted catalog");
         log.Add("Service install/remove is implemented but not executed by self-tests; no permanent service changes were made.");
+    }
+    static async Task WindowsTests(string folder,DateTimeOffset now)
+    {
+        var settings=new WindowsServerSettings();var normal=new WindowsSnapshot(20,1000,500,[new("C:",1000,500),new("D:",2000,1000)]);
+        Assert(WindowsProbe.Evaluate(settings,normal,now).Status==Health.Healthy,"Windows CPU, memory, and disks below thresholds are healthy");
+        Assert(WindowsProbe.Evaluate(settings,normal with{CpuPercent=80},now).Status==Health.Warning && WindowsProbe.Evaluate(settings,normal with{CpuPercent=90},now).Status==Health.Critical,"Windows CPU thresholds include equality");
+        Assert(WindowsProbe.Evaluate(settings,normal with{MemoryFreeKB=200},now).Status==Health.Warning && WindowsProbe.Evaluate(settings,normal with{MemoryFreeKB=100},now).Status==Health.Critical,"Windows physical memory used percentage triggers thresholds");
+        Assert(WindowsProbe.Evaluate(settings,normal with{Disks=[new("C:",1000,200)]},now).Status==Health.Warning && WindowsProbe.Evaluate(settings,normal with{Disks=[new("C:",1000,100)]},now).Status==Health.Critical,"Windows disk used percentage triggers thresholds");
+        Assert(WindowsProbe.Evaluate(settings,normal with{CpuPercent=80,Disks=[new("C:",1000,50)]},now).Status==Health.Critical,"Worst Windows resource determines overall severity");
+        var cpuOnly=settings with{Memory=new(){Enabled=false},Disk=new(){Enabled=false}};
+        Assert(WindowsProbe.Evaluate(cpuOnly,new(10,null,null,null),now).Status==Health.Healthy,"Disabled Windows metrics do not require unavailable readings");
+        Assert(WindowsProbe.Evaluate(settings with{Drives="c:"},normal with{Disks=[new("C:",1000,500),new("D:",1000,0)]},now).Status==Health.Healthy,"Windows drive selection excludes unrelated full drives");
+        foreach(var bad in new[]{normal with{CpuPercent=null},normal with{MemoryTotalKB=0},normal with{MemoryFreeKB=1001},normal with{Disks=[new("C:",0,0)]},normal with{Disks=[]},normal with{QueryError="Access denied"}})
+        {
+            bool failed=false;try{_=WindowsProbe.Evaluate(settings,bad,now);}catch(IOException){failed=true;}Assert(failed,"Missing, invalid, or inaccessible Windows data cannot report healthy");
+        }
+        bool missing=false;try{WindowsProbe.Evaluate(settings with{Drives="Z:"},normal,now);}catch(IOException){missing=true;}Assert(missing,"Missing configured Windows drive is an error");
+        foreach(var bad in new[]{settings with{Cpu=new(){Warning=90,Critical=80}},settings with{Cpu=new(){Warning=-1}},settings with{Cpu=new(){Critical=101}},settings with{Cpu=new(){Enabled=false},Memory=new(){Enabled=false},Disk=new(){Enabled=false}},settings with{Drives="C:;throw 'bad'"},settings with{UseWorkerAccount=false}})
+        {
+            bool failed=false;try{WindowsProbe.Validate(bad);}catch(ArgumentException){failed=true;}Assert(failed,"Invalid Windows configuration rejected");
+        }
+        var check=new MonitorCheck{Kind=CheckKind.WindowsServer,Name="Windows resources",Host="server.example.test",Port=5986,TimeoutSeconds=30,Windows=settings with{UseWorkerAccount=false,Username=@"DOMAIN\monitor",ProtectedPassword=Secret.Protect("test-only-password"),Drives="C:, D:",Cpu=new(){Warning=70,Critical=85}}};
+        var db=new Store(Path.Combine(folder,"windows.db"));db.Initialize();db.Save(check);var saved=db.Checks().Single();
+        Assert(saved.Windows==check.Windows && Secret.Unprotect(saved.Windows.ProtectedPassword)=="test-only-password","Windows thresholds, selection, and protected credential persist");
+        var warning=WindowsProbe.Evaluate(settings,normal with{CpuPercent=80},now);var critical=WindowsProbe.Evaluate(settings,normal with{CpuPercent=90},now);var smtp=new SmtpSettings{Enabled=true};
+        var criticalOnly=saved with{Windows=settings with{MinimumSeverity="Critical"}};
+        Assert(!Alerts.ShouldSend(criticalOnly,warning,smtp,now) && Alerts.ShouldSend(criticalOnly,critical,smtp,now),"Windows notification minimum severity filters warnings");
+        var disabled=saved with{Windows=settings with{MinimumSeverity="None"}};
+        Assert(!Alerts.ShouldSend(disabled,new(Health.Error,"Access denied",now),smtp,now),"Windows None suppresses resource and query-error notifications");
+        Assert(Alerts.ShouldSend(criticalOnly,new(Health.Error,"Access denied",now),smtp,now),"Windows authentication and query failures alert at Critical minimum");
+        Assert(Alerts.ShouldSend(criticalOnly with{LastAlertStatus="Critical",LastAlert=now,LastAttempt=now},WindowsProbe.Evaluate(settings,normal,now),smtp,now),"Windows resources use recovery email handling");
+        db.Save(criticalOnly with{Id=saved.Id});saved=db.Checks().Single();db.Result(saved,warning);Assert(!db.Events().Single().Notify,"Windows warnings below minimum remain visible without desktop notification");
+        var parsed=WindowsProbe.Parse("""{"CpuPercent":"12","MemoryTotalKB":1000,"MemoryFreeKB":250,"Disks":[{"Name":"C:","Size":"1000","FreeSpace":200}]}""");
+        Assert(parsed.CpuPercent==12 && WindowsProbe.Evaluate(settings,parsed,now).Status==Health.Warning,"Windows JSON numeric strings and disk array parse correctly");
+        using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var echo=await WindowsProbe.Execute("[Console]::InputEncoding=New-Object System.Text.UTF8Encoding($false);[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);[Console]::Out.WriteLine([Console]::In.ReadToEnd())","{\"message\":\"test £ input\"}",timeout.Token);
+        Assert(echo.ExitCode==0 && echo.Output.Contains("test £ input"),"Hidden Windows PowerShell helper receives JSON via stdin with UTF-8");
+        string astScript="$tokens=$null;$errors=$null;[void][System.Management.Automation.Language.Parser]::ParseInput([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"+Convert.ToBase64String(Encoding.UTF8.GetBytes(WindowsProbe.QueryScript))+"')),[ref]$tokens,[ref]$errors);if($errors.Count){exit 1};[Console]::Out.WriteLine('valid')";
+        var syntax=await WindowsProbe.Execute(astScript,"{}",timeout.Token);Assert(syntax.ExitCode==0 && syntax.Output.Contains("valid"),"WinRM query script parses in Windows PowerShell 5.1");
+        const string mocks="""
+        function New-CimSession { param($ComputerName,$Port,$SessionOption,$Authentication,$OperationTimeoutSec,$ErrorAction,$Credential)
+            if ($SessionOption.GetType().Name -ne 'WSManSessionOptions') { throw 'Expected WSMan options' }
+            if ($Authentication -ne 'Negotiate') { throw 'Expected Windows authentication' }
+            if ($null -ne $Credential -and $Credential.GetNetworkCredential().Password -ne 'test-only') { throw 'Credential pipe error' }
+            return 'test-session'
+        }
+        function Get-CimInstance { param($CimSession,$Namespace,$ClassName,$Filter,$Property,$ErrorAction)
+            switch ($ClassName) {
+                'Win32_PerfFormattedData_PerfOS_Processor' { [pscustomobject]@{PercentProcessorTime=42} }
+                'Win32_OperatingSystem' { [pscustomobject]@{TotalVisibleMemorySize=1000;FreePhysicalMemory=300} }
+                'Win32_LogicalDisk' { [pscustomobject]@{DeviceID='C:';Size=1000;FreeSpace=200} }
+                default { throw 'Unexpected CIM query' }
+            }
+        }
+        function Remove-CimSession { param($CimSession,$ErrorAction) }
+        """;
+        var scriptRequest="""{"Host":"test.invalid","Port":5986,"TimeoutSeconds":5,"UseSsl":true,"UseWorkerAccount":false,"Username":"test","Password":"test-only","Cpu":true,"Memory":true,"Disk":true}""";
+        var queried=await WindowsProbe.Execute(mocks+"\n"+WindowsProbe.QueryScript,scriptRequest,timeout.Token);
+        var sample=WindowsProbe.Parse(queried.Output);
+        Assert(queried.ExitCode==0 && sample.QueryError==null && sample.CpuPercent==42 && sample.Disks?.Single().Name=="C:","WinRM query script binds real WSMan options, credentials, and CIM result serialization: "+sample.QueryError);
+        using var cancel=new CancellationTokenSource(TimeSpan.FromMilliseconds(500));bool canceled=false;var elapsed=System.Diagnostics.Stopwatch.StartNew();
+        try{await WindowsProbe.Execute("Start-Sleep -Seconds 30","{}",cancel.Token);}catch(OperationCanceledException){canceled=true;}
+        Assert(canceled && elapsed.Elapsed<TimeSpan.FromSeconds(6),"Windows timeout cancels and terminates its query process");
     }
     static async Task SnmpTests(string folder,DateTimeOffset now)
     {
@@ -202,7 +271,6 @@ public static class SelfTests
         using var canceled=new CancellationTokenSource();canceled.Cancel();bool stopped=false;
         try{await SnmpProbe.Discover("127.0.0.1",161,config,"1.3.6.1",1,catalog,canceled.Token);}catch(OperationCanceledException){stopped=true;}
         Assert(stopped,"Discovery cancellation stops network work");
-        using var picker=new SnmpMetricDialog(db,"127.0.0.1",161,"public",1);Assert(picker.Controls.Count>0,"SNMP metric picker initializes with persisted catalog");
     }
     static byte[] SnmpResponse(SnmpSettings settings,int id,decimal value)
     {

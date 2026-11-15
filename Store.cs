@@ -44,7 +44,9 @@ public sealed class Store(string path)
         if(Convert.ToInt32(cmd.ExecuteScalar())==0){cmd.CommandText="ALTER TABLE Checks ADD COLUMN SnmpJson TEXT NOT NULL DEFAULT '{}'";cmd.ExecuteNonQuery();}
         cmd.CommandText="SELECT COUNT(*) FROM pragma_table_info('Events') WHERE name='Notify'";
         if(Convert.ToInt32(cmd.ExecuteScalar())==0){cmd.CommandText="ALTER TABLE Events ADD COLUMN Notify INTEGER NOT NULL DEFAULT 1";cmd.ExecuteNonQuery();}
-        cmd.CommandText="PRAGMA user_version=4";cmd.ExecuteNonQuery();transaction.Commit();
+        cmd.CommandText="SELECT COUNT(*) FROM pragma_table_info('Checks') WHERE name='WindowsJson'";
+        if(Convert.ToInt32(cmd.ExecuteScalar())==0){cmd.CommandText="ALTER TABLE Checks ADD COLUMN WindowsJson TEXT NOT NULL DEFAULT '{}'";cmd.ExecuteNonQuery();}
+        cmd.CommandText="PRAGMA user_version=5";cmd.ExecuteNonQuery();transaction.Commit();
     }
     static void Param(SqliteCommand cmd, string key, object? value) => cmd.Parameters.AddWithValue(key, value ?? DBNull.Value);
     static string? Stamp(DateTimeOffset? v) => v?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
@@ -57,7 +59,7 @@ public sealed class Store(string path)
             Id=r.GetInt64(0),Name=r.GetString(1),Host=r.GetString(2),Port=r.GetInt32(3),Kind=(CheckKind)r.GetInt32(4),TlsName=r.GetString(5),
             IntervalSeconds=r.GetInt32(6),TimeoutSeconds=r.GetInt32(7),Enabled=r.GetBoolean(8),UdpMode=r.GetString(9),Payload=r.GetString(10),
             HexPayload=r.GetBoolean(11),ExpectedHex=r.GetString(12),Revision=r.GetInt64(13),Status=(Health)r.GetInt32(14),Detail=r.GetString(15),
-            LastChecked=Date(r,16),Expires=Date(r,17),LatencyMs=r.IsDBNull(18)?null:r.GetInt64(18),LastAlertStatus=r.GetString(19),LastAlert=Date(r,20),LastAttempt=Date(r,21),HttpPath=r.GetString(r.GetOrdinal("HttpPath")),HttpStatusMin=r.GetInt32(r.GetOrdinal("HttpStatusMin")),HttpStatusMax=r.GetInt32(r.GetOrdinal("HttpStatusMax")),ManualExpiration=Date(r,r.GetOrdinal("ManualExpiration")),Snmp=JsonSerializer.Deserialize<SnmpSettings>(r.GetString(r.GetOrdinal("SnmpJson")))??new()
+            LastChecked=Date(r,16),Expires=Date(r,17),LatencyMs=r.IsDBNull(18)?null:r.GetInt64(18),LastAlertStatus=r.GetString(19),LastAlert=Date(r,20),LastAttempt=Date(r,21),HttpPath=r.GetString(r.GetOrdinal("HttpPath")),HttpStatusMin=r.GetInt32(r.GetOrdinal("HttpStatusMin")),HttpStatusMax=r.GetInt32(r.GetOrdinal("HttpStatusMax")),ManualExpiration=Date(r,r.GetOrdinal("ManualExpiration")),Snmp=JsonSerializer.Deserialize<SnmpSettings>(r.GetString(r.GetOrdinal("SnmpJson")))??new(),Windows=JsonSerializer.Deserialize<WindowsServerSettings>(r.GetString(r.GetOrdinal("WindowsJson")))??new()
         });
         return list;
     }
@@ -65,11 +67,12 @@ public sealed class Store(string path)
     {
         if(v.Kind==CheckKind.PrivateCertificate && !v.ManualExpiration.HasValue)throw new ArgumentException("Enter the private certificate expiration.");
         if(v.Kind==CheckKind.SNMP)SnmpProbe.Validate(v.Snmp);
+        if(v.Kind==CheckKind.WindowsServer)WindowsProbe.Validate(v.Windows);
         using var c=Open(); using var cmd=c.CreateCommand();
-        var fields="Name=$n,Host=$h,Port=$p,Kind=$k,TlsName=$t,IntervalSeconds=$i,TimeoutSeconds=$o,Enabled=$e,UdpMode=$u,Payload=$d,HexPayload=$x,ExpectedHex=$q,HttpPath=$hp,HttpStatusMin=$min,HttpStatusMax=$max,ManualExpiration=$manual,SnmpJson=$snmp";
-        cmd.CommandText=v.Id==0?"INSERT INTO Checks(Name,Host,Port,Kind,TlsName,IntervalSeconds,TimeoutSeconds,Enabled,UdpMode,Payload,HexPayload,ExpectedHex,HttpPath,HttpStatusMin,HttpStatusMax,ManualExpiration,SnmpJson) VALUES($n,$h,$p,$k,$t,$i,$o,$e,$u,$d,$x,$q,$hp,$min,$max,$manual,$snmp)":$"UPDATE Checks SET {fields},Revision=Revision+1,Status=0,Detail='Configuration changed; waiting for check',LastChecked=NULL,Expires=NULL,LatencyMs=NULL,LastAlertStatus='',LastAlert=NULL,LastAttempt=NULL WHERE Id=$id";
+        var fields="Name=$n,Host=$h,Port=$p,Kind=$k,TlsName=$t,IntervalSeconds=$i,TimeoutSeconds=$o,Enabled=$e,UdpMode=$u,Payload=$d,HexPayload=$x,ExpectedHex=$q,HttpPath=$hp,HttpStatusMin=$min,HttpStatusMax=$max,ManualExpiration=$manual,SnmpJson=$snmp,WindowsJson=$windows";
+        cmd.CommandText=v.Id==0?"INSERT INTO Checks(Name,Host,Port,Kind,TlsName,IntervalSeconds,TimeoutSeconds,Enabled,UdpMode,Payload,HexPayload,ExpectedHex,HttpPath,HttpStatusMin,HttpStatusMax,ManualExpiration,SnmpJson,WindowsJson) VALUES($n,$h,$p,$k,$t,$i,$o,$e,$u,$d,$x,$q,$hp,$min,$max,$manual,$snmp,$windows)":$"UPDATE Checks SET {fields},Revision=Revision+1,Status=0,Detail='Configuration changed; waiting for check',LastChecked=NULL,Expires=NULL,LatencyMs=NULL,LastAlertStatus='',LastAlert=NULL,LastAttempt=NULL WHERE Id=$id";
         Param(cmd,"$id",v.Id);Param(cmd,"$n",v.Name);Param(cmd,"$h",v.Host);Param(cmd,"$p",v.Port);Param(cmd,"$k",(int)v.Kind);Param(cmd,"$t",v.TlsName);
-        Param(cmd,"$i",v.IntervalSeconds);Param(cmd,"$o",v.TimeoutSeconds);Param(cmd,"$e",v.Enabled);Param(cmd,"$u",v.UdpMode);Param(cmd,"$d",v.Payload);Param(cmd,"$x",v.HexPayload);Param(cmd,"$q",v.ExpectedHex);Param(cmd,"$hp",v.HttpPath);Param(cmd,"$min",v.HttpStatusMin);Param(cmd,"$max",v.HttpStatusMax);Param(cmd,"$snmp",JsonSerializer.Serialize(v.Snmp));Param(cmd,"$manual",Stamp(v.ManualExpiration));cmd.ExecuteNonQuery();
+        Param(cmd,"$i",v.IntervalSeconds);Param(cmd,"$o",v.TimeoutSeconds);Param(cmd,"$e",v.Enabled);Param(cmd,"$u",v.UdpMode);Param(cmd,"$d",v.Payload);Param(cmd,"$x",v.HexPayload);Param(cmd,"$q",v.ExpectedHex);Param(cmd,"$hp",v.HttpPath);Param(cmd,"$min",v.HttpStatusMin);Param(cmd,"$max",v.HttpStatusMax);Param(cmd,"$windows",JsonSerializer.Serialize(v.Windows));Param(cmd,"$snmp",JsonSerializer.Serialize(v.Snmp));Param(cmd,"$manual",Stamp(v.ManualExpiration));cmd.ExecuteNonQuery();
     }
     public List<SnmpMetric> Metrics()
     {

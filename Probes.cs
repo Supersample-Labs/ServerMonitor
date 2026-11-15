@@ -44,6 +44,7 @@ public static class Probes
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(check.TimeoutSeconds));var ct=timeout.Token;var watch=Stopwatch.StartNew();
         try
         {
+            if(check.Kind==CheckKind.WindowsServer)return await WindowsProbe.Run(check,watch,ct);
             if(check.Kind==CheckKind.SNMP)return await SnmpProbe.Run(check,watch,ct);
             if(check.Kind==CheckKind.UDP)return await Udp(check,watch,ct);
             using var client=new TcpClient();await client.ConnectAsync(check.Host,check.Port,ct);
@@ -76,7 +77,7 @@ public static class Probes
             finally { certificate?.Dispose(); }
         }
         catch(OperationCanceledException) when(!cancellation.IsCancellationRequested)
-        {return new(check.Kind is CheckKind.UDP or CheckKind.SNMP?Health.NoResponse:Health.Down,$"No response within {check.TimeoutSeconds}s"+(check.Kind==CheckKind.SNMP?". No valid SNMP response; check the community, OID, device access settings, and firewall.":check.Kind==CheckKind.UDP?". UDP silence is inconclusive; check the probe payload and firewall.":" (DNS, connection, or TLS timeout)."),DateTimeOffset.UtcNow,watch.ElapsedMilliseconds);}
+        {return new(check.Kind is CheckKind.UDP or CheckKind.SNMP or CheckKind.WindowsServer?Health.NoResponse:Health.Down,$"No response within {check.TimeoutSeconds}s"+(check.Kind==CheckKind.WindowsServer?". WinRM connection or resource query timed out; check the listener, credentials, and firewall.":check.Kind==CheckKind.SNMP?". No valid SNMP response; check the community, OID, device access settings, and firewall.":check.Kind==CheckKind.UDP?". UDP silence is inconclusive; check the probe payload and firewall.":" (DNS, connection, or TLS timeout)."),DateTimeOffset.UtcNow,watch.ElapsedMilliseconds);}
         catch(SocketException ex) { return new(Health.Down,$"{ex.SocketErrorCode}: {ex.Message}",DateTimeOffset.UtcNow,watch.ElapsedMilliseconds); }
         catch(OperationCanceledException) { throw; }
         catch(Exception ex) { return new(Health.Error,$"{ex.GetType().Name}: {ex.Message}",DateTimeOffset.UtcNow,watch.ElapsedMilliseconds); }
