@@ -41,12 +41,13 @@ public static class Alerts
         if(!string.IsNullOrWhiteSpace(s.Username))await client.AuthenticateAsync(s.Username,Secret.Unprotect(s.ProtectedPassword),deadline.Token);
         await client.SendAsync(msg,deadline.Token);await client.DisconnectAsync(true,deadline.Token);
     }
+    public static bool SeverityAllowed(MonitorCheck c,CheckResult r) => c.Kind!=CheckKind.SNMP || c.Snmp.MinimumSeverity!="None" && (r.Status!=Health.Warning || c.Snmp.MinimumSeverity=="Warning");
     public static bool ShouldSend(MonitorCheck c,CheckResult r,SmtpSettings s,DateTimeOffset now)
     {
-        if(!s.Enabled)return false;
+        if(!s.Enabled || !SeverityAllowed(c,r))return false;
         // Failed deliveries retry after five minutes. Successful deliveries do not delay transitions.
         if(c.LastAttempt.HasValue && (!c.LastAlert.HasValue || c.LastAttempt>c.LastAlert) && now-c.LastAttempt<TimeSpan.FromMinutes(5))return false;
-        if(!r.Problem)return s.Recovery && c.LastAlertStatus!="" && c.LastAlertStatus!=Health.Healthy.ToString();
+        if(!r.Problem)return r.Status==Health.Healthy && s.Recovery && c.LastAlertStatus!="" && c.LastAlertStatus!=Health.Healthy.ToString();
         return c.LastAlertStatus!=r.Status.ToString() || !c.LastAlert.HasValue || now-c.LastAlert>=TimeSpan.FromHours(s.ReminderHours);
     }
 }

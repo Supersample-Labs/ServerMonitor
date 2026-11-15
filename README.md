@@ -101,3 +101,47 @@ Version 1.1 also replaces the fixed-height title container with an auto-sized tw
 Choose **Add monitor → Private Certificate**, enter a display name (for example, SAML signing certificate), and assign the expiration date and time in the computer’s local time zone. Host, port, and network settings are not needed. No certificate or private key is uploaded or stored.
 
 The monitor is healthy with more than 30 days remaining, expiring at 30 days or less, and expired at the expiration instant. It uses the existing desktop notifications, SMTP alerts, reminders, and recovery settings. Monitoring must be running in the desktop app or Windows service. Update the assigned expiration after renewal. This is manual expiry tracking; it does not validate certificate trust or discover renewals. Existing databases upgrade automatically.
+
+## SNMP OID monitoring
+
+Choose **Add monitor > SNMP** for SNMP v2c GET polling over UDP (default 161). Configure the hostname/IP, read-only community, numeric OID with instance suffix, interval, and timeout. Devices must permit requests from the monitoring computer. SNMP v1/v3, traps, and rate conversion are not enabled. Use the picker below to discover table instances and resolve catalog names.
+
+Configure warning and critical thresholds and select **At or above** or **At or below**. Equality triggers the severity; critical takes precedence. Critical must be above warning for rising values and below warning for falling values. Values use raw OID units: sysUpTime is hundredths of seconds and counters are cumulative. Integers, Counter32/64, Gauge32, TimeTicks, and numeric strings are supported. Nonnumeric values and agent errors are unhealthy; silence is NoResponse.
+
+**Minimum alert severity** filters email and desktop notifications. Warning includes warning and critical; Critical suppresses warning notifications; None disables SNMP notifications. With Warning or Critical selected, connection/protocol/timeout failures still alert. Health and history remain visible regardless. Existing SMTP retries, reminders, and recovery settings apply. Recovery occurs when the value becomes healthy after a delivered problem alert.
+
+SNMP v2c sends the community unencrypted and stores it in the local database. Restrict database access and use a trusted network. Protocol reference: [RFC 3416](https://www.rfc-editor.org/rfc/rfc3416.html).
+
+### Choosing SNMP metrics
+
+In **Add monitor > SNMP**, enter the device address, port, and community, then select **Choose / discover metric**. The searchable built-in catalog covers system identity/uptime, interface states/counters, processor utilization, and storage. Availability depends on the device. Choose a scalar directly or select **Browse selected** to discover a table column's actual instances. **Discover metrics** walks the displayed subtree; it does not scan other hosts. Each scan stops at 512 readings or approximately 30 seconds, with a per-request timeout and Cancel scan button. Narrow the subtree for large devices. Partial results remain available on timeout. Numeric readings can become monitors; text readings help identify the device or instance.
+
+The selected metric name and units are saved with the monitor and appear in results. Thresholds still compare raw numbers. Traffic counters are cumulative rather than bits/second, storage units are not percentages, and state codes are not a severity scale. Confirm the documented units and set thresholds before saving. Imported catalogs supply labels and descriptions, not automatic threshold defaults or conversions. Custom OID entry remains available.
+
+### Vendor MIB catalogs
+
+The picker accepts **PySMI JSON modules** or a simple JSON catalog. Imported definitions are saved in the application's database and included in its backups. Reimporting an OID updates its definition. Existing monitor names/units remain as selected until you choose the metric again. Imports are limited to 8 MiB / 10,000 definitions and are validated before saving.
+
+To convert a vendor ASN.1 MIB on a development/admin computer, install the free [PySMI tool](https://docs.lextudio.com/pysmi/quick-start) and run its `mibdump` command, for example:
+
+```powershell
+mibdump --generate-mib-texts --destination-format=json --destination-directory=./catalogs --mib-source=file:///C:/MIBs MY-VENDOR-MIB
+```
+
+Supply the vendor's MIB and its required dependency modules. See the [PySMI command documentation](https://docs.lextudio.com/pysmi/docs/mibdump) for source/dependency options. In the picker select **Import MIB JSON** and choose the generated module JSON file. Repeat for additional modules. Raw `.mib`/`.txt` files and PySMI index files are not imported directly. PySMI is an optional preparation tool: users running Server Monitor do not need Python. Check the vendor's terms before redistributing its MIB definitions.
+
+A simple catalog uses definition OIDs without instance suffixes; `scalar: true` adds `.0`, while `scalar: false` requires discovery or a custom instance:
+
+```json
+[
+  {
+    "oid": "1.3.6.1.4.1.32473.1",
+    "name": "Example temperature",
+    "units": "degrees C",
+    "description": "Example only: replace with your device's documented definition.",
+    "scalar": true
+  }
+]
+```
+
+SNMP communication and discovery use the MIT-licensed [SharpSnmpLib](https://github.com/lextudio/sharpsnmplib), bundled in the executable. The app currently exposes v2c configuration; v1/v3 and traps are not enabled. Common metric definitions follow [RFC 2790](https://www.rfc-editor.org/rfc/rfc2790.html) and [RFC 2863](https://www.rfc-editor.org/rfc/rfc2863.html).

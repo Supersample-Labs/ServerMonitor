@@ -21,6 +21,7 @@ public static class SelfTests
     static async Task Tests(string folder)
     {
         var now=DateTimeOffset.UtcNow;var clear=SslPolicyErrors.None;
+        await SnmpTests(folder,now);
         Assert(Probes.CertificateResult(now.AddDays(31),now.AddDays(-1),clear,now,1).Status==Health.Healthy,"Certificate >30 days is green");
         Assert(Probes.CertificateResult(now.AddDays(30),now.AddDays(-1),clear,now,1).Status==Health.Expiring,"Certificate exactly 30 days is red");
         Assert(Probes.CertificateResult(now.AddSeconds(-1),now.AddDays(-1),clear,now,1).Status==Health.Expired,"Expired certificate is red");
@@ -70,9 +71,9 @@ public static class SelfTests
         var notified=edited with{LastAlertStatus="Down",LastAlert=now,LastAttempt=now};Assert(!Alerts.ShouldSend(notified,down,smtp,now.AddHours(1)),"Delivered alert is deduplicated");Assert(Alerts.ShouldSend(notified,down,smtp,now.AddHours(24)),"Reminder after configured interval");Assert(Alerts.ShouldSend(notified,new(Health.Healthy,"OK",now),smtp,now.AddMinutes(1)),"Recovery email transition");Assert(!Alerts.ShouldSend(edited with{LastAttempt=now},down,smtp,now.AddMinutes(1)),"Failed email retry is throttled");
         store.Backup(Path.Combine(folder,"backup.db"));Assert(new Store(Path.Combine(folder,"backup.db")).Checks().Count==1,"SQLite consistent backup");
         var old=new Store(Path.Combine(folder,"legacy.db"));old.Initialize();old.Save(new(){Name="Legacy certificate",Host="localhost",Kind=CheckKind.Certificate});
-        using(var db=old.Open()){using var command=db.CreateCommand();command.CommandText="ALTER TABLE Checks DROP COLUMN ManualExpiration;ALTER TABLE Checks DROP COLUMN HttpPath;ALTER TABLE Checks DROP COLUMN HttpStatusMin;ALTER TABLE Checks DROP COLUMN HttpStatusMax;PRAGMA user_version=1;";command.ExecuteNonQuery();}
+        using(var db=old.Open()){using var command=db.CreateCommand();command.CommandText="ALTER TABLE Checks DROP COLUMN SnmpJson;ALTER TABLE Events DROP COLUMN Notify;ALTER TABLE Checks DROP COLUMN ManualExpiration;ALTER TABLE Checks DROP COLUMN HttpPath;ALTER TABLE Checks DROP COLUMN HttpStatusMin;ALTER TABLE Checks DROP COLUMN HttpStatusMax;PRAGMA user_version=1;";command.ExecuteNonQuery();}
         old.Initialize();var migrated=old.Checks().Single();
-        Assert(migrated.Kind==CheckKind.Certificate && migrated.Name=="Legacy certificate" && migrated.HttpPath=="/" && migrated.HttpStatusMax==399 && migrated.ManualExpiration==null,"Existing database migrates without changing certificate-only monitors");
+        Assert(migrated.Kind==CheckKind.Certificate && migrated.Name=="Legacy certificate" && migrated.HttpPath=="/" && migrated.HttpStatusMax==399 && migrated.ManualExpiration==null && migrated.Snmp==new SnmpSettings(),"Existing database migrates without changing certificate-only monitors");
         var transfer=Path.Combine(folder,"upgrade");Directory.CreateDirectory(transfer);store.Backup(Path.Combine(transfer,"PortSentinel.db"));Paths.ImportLegacyDatabase(transfer);
         var imported=new Store(Path.Combine(transfer,"ServerMonitor.db"));
         Assert(imported.Checks().Count==1 && imported.Settings().Host==smtp.Host && imported.LeaseOwner()=="No active worker","Renamed database import preserves checks and SMTP settings without stale worker ownership");
@@ -131,6 +132,83 @@ public static class SelfTests
         using(var window=new MainForm(store,false))
             Assert(dialog.Controls.Count>0 && settings.Controls.Count>0 && window.Controls.Count>0,"WinForms monitor, SMTP, and dashboard constructors initialize successfully");
         log.Add("Service install/remove is implemented but not executed by self-tests; no permanent service changes were made.");
+    }
+    static async Task SnmpTests(string folder,DateTimeOffset now)
+    {
+        var config=new SnmpSettings();SnmpProbe.Validate(config);
+        Assert(SnmpProbe.Evaluate(config,79,now).Status==Health.Healthy && SnmpProbe.Evaluate(config,80,now).Status==Health.Warning && SnmpProbe.Evaluate(config,90,now).Status==Health.Critical,"SNMP inclusive rising thresholds");
+        var falling=config with{LowerIsWorse=true,Warning=20,Critical=10};
+        Assert(SnmpProbe.Evaluate(falling,21,now).Status==Health.Healthy && SnmpProbe.Evaluate(falling,20,now).Status==Health.Warning && SnmpProbe.Evaluate(falling,10,now).Status==Health.Critical,"SNMP inclusive falling thresholds");
+        bool invalid=false;try{SnmpProbe.Validate(config with{Critical=80});}catch(ArgumentException){invalid=true;}Assert(invalid,"SNMP rejects overlapping thresholds");
+        var monitor=new MonitorCheck{Name="SNMP",Kind=CheckKind.SNMP,Host="127.0.0.1",Port=161,Snmp=config with{MinimumSeverity="Critical"}};
+        var smtp=new SmtpSettings{Enabled=true};
+        Assert(!Alerts.ShouldSend(monitor,SnmpProbe.Evaluate(config,80,now),smtp,now) && Alerts.ShouldSend(monitor,SnmpProbe.Evaluate(config,90,now),smtp,now),"SNMP minimum email severity enforced");
+        Assert(Alerts.ShouldSend(monitor,new(Health.NoResponse,"timeout",now),smtp,now) && !Alerts.ShouldSend(monitor with{Snmp=config with{MinimumSeverity="None"}},new(Health.Error,"error",now),smtp,now),"SNMP failures alert unless disabled");
+        var db=new Store(Path.Combine(folder,"snmp.db"));db.Initialize();db.Save(monitor);var saved=db.Checks().Single();
+        Assert(saved.Snmp==monitor.Snmp && saved.Kind==CheckKind.SNMP,"SNMP configuration round trip");
+        db.Result(saved,SnmpProbe.Evaluate(config,80,now));Assert(!db.Events().Single().Notify,"SNMP below minimum severity remains visible without desktop notification");
+        db.Result(db.Checks().Single(),SnmpProbe.Evaluate(config,90,now));Assert(db.Events().First().Notify,"SNMP critical desktop notification enabled");
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(15));var ct=deadline.Token;
+        using var agent=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
+        var server=Task.Run(async()=>{
+            var request=await agent.ReceiveAsync(ct);var r=new System.Formats.Asn1.AsnReader(request.Buffer,System.Formats.Asn1.AsnEncodingRules.BER).ReadSequence();
+            Assert(r.ReadInteger()==1 && Encoding.UTF8.GetString(r.ReadOctetString())==config.Community,"SNMP v2c request version and community");
+            var pdu=r.ReadSequence(new System.Formats.Asn1.Asn1Tag(System.Formats.Asn1.TagClass.ContextSpecific,0,true));int id=(int)pdu.ReadInteger();pdu.ReadInteger();pdu.ReadInteger();var v=pdu.ReadSequence().ReadSequence();
+            Assert(v.ReadObjectIdentifier()==config.Oid,"SNMP GET requests configured OID");
+            await agent.SendAsync(SnmpResponse(config,id+1,99),request.RemoteEndPoint,ct);
+            await agent.SendAsync(SnmpResponse(config,id,90),request.RemoteEndPoint,ct);
+        },ct);
+        var result=await Probes.Run(monitor with{Port=((IPEndPoint)agent.Client.LocalEndPoint!).Port,TimeoutSeconds=2},ct);Assert(result.Status==Health.Critical,"SNMP probe result: "+result.Detail);await server;
+        Assert(result.Status==Health.Critical && result.Detail.Contains("90"),"Live SNMP GET ignores unrelated ID and evaluates numeric response");
+        var silent=await Probes.Run(monitor with{Port=((IPEndPoint)agent.Client.LocalEndPoint!).Port,TimeoutSeconds=1},ct);
+        Assert(silent.Status==Health.NoResponse,"SNMP timeout is NoResponse");
+        bool malformed=false;try{SnmpProbe.ReadResponse(new byte[]{0x30,0x7f},config,1);}catch(Lextm.SharpSnmpLib.SnmpException){malformed=true;}Assert(malformed,"Malformed SNMP packet rejected");
+        Assert(SnmpProbe.ReadResponse(SnmpResponse(config,1,18446744073709551615m),config,1)==18446744073709551615m,"SNMP Counter64 retains unsigned precision");
+        await SnmpDiscoveryTests(db,ct);
+    }
+    static async Task SnmpDiscoveryTests(Store db,CancellationToken ct)
+    {
+        const string json="""
+        {"temp":{"class":"objecttype","nodetype":"scalar","name":"Example temperature","oid":"1.3.6.1.4.1.32473.1","units":"degrees C","syntax":{"type":"Integer32"},"maxaccess":"read-only","description":"Example temperature."},
+         "column":{"class":"objecttype","nodetype":"column","name":"Example load","oid":"1.3.6.1.4.1.32473.2.1","units":"percent","syntax":{"type":"Gauge32"},"maxaccess":"read-only"},
+         "table":{"class":"objecttype","nodetype":"table","name":"skip","oid":"1.3.6.1.4.1.32473.2","maxaccess":"not-accessible"}}
+        """;
+        Assert(db.ImportMetrics(json)==2,"PySMI JSON imports readable scalars and columns, skips table containers");
+        var catalog=db.Metrics();
+        Assert(catalog.Single(m=>m.Name=="Example temperature").Numeric,"PySMI numeric syntax supports direct scalar selection");
+        Assert(SnmpCatalog.Match(catalog,"1.3.6.1.4.1.32473.1.0")?.Units=="degrees C" && SnmpCatalog.Match(catalog,"1.3.6.1.4.1.32473.2.1.4")?.Name=="Example load","Catalog resolves scalar and table instances");
+        Assert(SnmpCatalog.Match(catalog,"1.3.6.1.4.1.32473.10.0")==null,"Catalog matching respects OID boundaries");
+        int count=catalog.Count;bool rejected=false;try{db.ImportMetrics("[{\"oid\":\"bad\",\"name\":\"Bad\"}]");}catch(ArgumentException){rejected=true;}
+        Assert(rejected&&db.Metrics().Count==count,"Invalid catalog import leaves persisted definitions intact");
+        var roundTrip=System.Text.Json.JsonSerializer.Serialize(new[]{new SnmpMetric("1.3.6.1.4.1.32473.3","Example metric","raw","Custom scalar")},new System.Text.Json.JsonSerializerOptions{PropertyNamingPolicy=System.Text.Json.JsonNamingPolicy.CamelCase});
+        Assert(db.ImportMetrics(roundTrip)==1 && db.Metrics().Count==count+1,"Simple catalog array imports and persists");
+        using var agent=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));
+        var config=new SnmpSettings();
+        var server=Task.Run(async()=>{
+            var values=new List<Lextm.SharpSnmpLib.Variable>{new(new Lextm.SharpSnmpLib.ObjectIdentifier("1.3.6.1.4.1.32473.1.0"),new Lextm.SharpSnmpLib.Integer32(42)),new(new Lextm.SharpSnmpLib.ObjectIdentifier("1.3.6.1.4.1.32473.2.1.4"),new Lextm.SharpSnmpLib.Gauge32(75)),new(new Lextm.SharpSnmpLib.ObjectIdentifier("1.3.6.1.4.1.32473.2.1.5"),new Lextm.SharpSnmpLib.OctetString("device text")),new(new Lextm.SharpSnmpLib.ObjectIdentifier("1.3.6.1.4.1.32474.1.0"),new Lextm.SharpSnmpLib.Integer32(0))};
+            foreach(var value in values)
+            {
+                var packet=await agent.ReceiveAsync(ct);var request=Lextm.SharpSnmpLib.Messaging.MessageFactory.ParseMessages(packet.Buffer,new Lextm.SharpSnmpLib.Security.UserRegistry()).Single();
+                Assert(request.Scope.Pdu.TypeCode==Lextm.SharpSnmpLib.SnmpType.GetNextRequestPdu,"Discovery uses SNMP GET NEXT");
+                var response=new Lextm.SharpSnmpLib.Messaging.ResponseMessage(request.Scope.Pdu.RequestId.ToInt32(),Lextm.SharpSnmpLib.VersionCode.V2,new Lextm.SharpSnmpLib.OctetString("public"),Lextm.SharpSnmpLib.ErrorCode.NoError,0,[value]);
+                await agent.SendAsync(response.ToBytes(),packet.RemoteEndPoint,ct);
+            }
+        },ct);
+        var discovery=await SnmpProbe.Discover("127.0.0.1",((IPEndPoint)agent.Client.LocalEndPoint!).Port,config,"1.3.6.1.4.1.32473",1,catalog,ct);await server;
+        Assert(discovery.Readings.Count==3 && discovery.Readings[0].Name=="Example temperature" && discovery.Readings[1].Name=="Example load [4]","Live discovery names catalog metrics and preserves table indices");
+        Assert(discovery.Readings[1].Value=="75" && !discovery.Readings[2].Numeric && discovery.Message=="Discovery complete.","Discovery retains live numeric/text values and stops at subtree boundary");
+        var incomplete=await SnmpProbe.Discover("127.0.0.1",((IPEndPoint)agent.Client.LocalEndPoint!).Port,config,"1.3.6.1.4.1.32473",1,catalog,ct);
+        Assert(incomplete.Readings.Count==0 && incomplete.Message.Contains("timeout",StringComparison.OrdinalIgnoreCase),"Discovery timeout reports incomplete scan");
+        using var canceled=new CancellationTokenSource();canceled.Cancel();bool stopped=false;
+        try{await SnmpProbe.Discover("127.0.0.1",161,config,"1.3.6.1",1,catalog,canceled.Token);}catch(OperationCanceledException){stopped=true;}
+        Assert(stopped,"Discovery cancellation stops network work");
+        using var picker=new SnmpMetricDialog(db,"127.0.0.1",161,"public",1);Assert(picker.Controls.Count>0,"SNMP metric picker initializes with persisted catalog");
+    }
+    static byte[] SnmpResponse(SnmpSettings settings,int id,decimal value)
+    {
+        var w=new System.Formats.Asn1.AsnWriter(System.Formats.Asn1.AsnEncodingRules.BER);w.PushSequence();w.WriteInteger(1);w.WriteOctetString(Encoding.UTF8.GetBytes(settings.Community));
+        var tag=new System.Formats.Asn1.Asn1Tag(System.Formats.Asn1.TagClass.ContextSpecific,2,true);w.PushSequence(tag);w.WriteInteger(id);w.WriteInteger(0);w.WriteInteger(0);w.PushSequence();w.PushSequence();w.WriteObjectIdentifier(settings.Oid);
+        w.WriteInteger(new System.Numerics.BigInteger(value),new System.Formats.Asn1.Asn1Tag(System.Formats.Asn1.TagClass.Application,6));w.PopSequence();w.PopSequence();w.PopSequence(tag);w.PopSequence();return w.Encode();
     }
     static async Task<(CheckResult Result,string Request)> Https(X509Certificate2 certificate,string response,CancellationToken ct)
     {

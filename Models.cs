@@ -1,7 +1,7 @@
 namespace ServerMonitor;
 
-public enum CheckKind { TCP, UDP, Certificate, HTTPS, PrivateCertificate }
-public enum Health { Pending, Healthy, Down, NoResponse, Expiring, Expired, InvalidCertificate, Error, HttpError }
+public enum CheckKind { TCP, UDP, Certificate, HTTPS, PrivateCertificate, SNMP }
+public enum Health { Pending, Healthy, Down, NoResponse, Expiring, Expired, InvalidCertificate, Error, HttpError, Warning, Critical }
 public sealed record MonitorCheck
 {
     public long Id { get; set; }
@@ -21,6 +21,7 @@ public sealed record MonitorCheck
     public int HttpStatusMin { get; set; } = 200;
     public int HttpStatusMax { get; set; } = 399;
     public DateTimeOffset? ManualExpiration { get; set; }
+    public SnmpSettings Snmp { get; set; } = new();
     public long Revision { get; set; }
     public Health Status { get; set; } = Health.Pending;
     public string Detail { get; set; } = "Not checked yet";
@@ -35,6 +36,17 @@ public sealed record CheckResult(Health Status, string Detail, DateTimeOffset Ch
 {
     public bool Problem => Status is not (Health.Healthy or Health.Pending);
 }
+public sealed record SnmpSettings
+{
+    public string Community { get; set; } = "public";
+    public string Oid { get; set; } = "1.3.6.1.2.1.1.3.0";
+    public string MetricName { get; set; } = "";
+    public string Units { get; set; } = "";
+    public decimal Warning { get; set; } = 80;
+    public decimal Critical { get; set; } = 90;
+    public bool LowerIsWorse { get; set; }
+    public string MinimumSeverity { get; set; } = "Warning";
+}
 public sealed record SmtpSettings
 {
     public bool Enabled { get; set; }
@@ -48,7 +60,7 @@ public sealed record SmtpSettings
     public int ReminderHours { get; set; } = 24;
     public bool Recovery { get; set; } = true;
 }
-public sealed record MonitorEvent(long Id, DateTimeOffset At, string Name, string Status, string Detail, bool Problem);
+public sealed record MonitorEvent(long Id, DateTimeOffset At, string Name, string Status, string Detail, bool Problem, bool Notify = true);
 public static class Paths
 {
     public static string DirectoryPath => AppContext.BaseDirectory;
