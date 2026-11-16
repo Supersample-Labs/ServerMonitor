@@ -20,6 +20,7 @@ public static class SelfTests
     }
     static async Task Tests(string folder)
     {
+        await EngineTests.Run(folder,Assert);
         var now=DateTimeOffset.UtcNow;var clear=SslPolicyErrors.None;
         await SnmpTests(folder,now);
         await WindowsTests(folder,now);

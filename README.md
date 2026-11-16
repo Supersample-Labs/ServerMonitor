@@ -200,3 +200,27 @@ Existing enabled monitors can use **Edit > Check this PC for WinRM > Configure t
 Windows and SMTP password fields show **Saved password — leave blank to keep** when a credential is stored for the selected account. Editing a host, port, resource threshold, or other connection setting keeps that password if the field is left blank. Enter a new password to replace it. Windows account matching ignores letter case and surrounding whitespace; switching to a different account requires its password. Selecting the worker account removes the explicit Windows credential when saved. SMTP has a separate **Remove the saved password** option. Changing an SMTP username does not silently reuse a different account's credential.
 
 Password hints never decrypt or display the stored password. New passwords are protected with Windows DPAPI before saving to SQLite; unchanged edits retain the existing encrypted value. DPAPI uses machine scope so the service can authenticate, and database file permissions remain important. The SQLite database as a whole is not encrypted.
+
+## Monitoring performance (v1.5.0)
+
+Open **Monitoring settings** to tune the active desktop or service worker. Defaults apply automatically to existing databases:
+
+| Setting | Default | Range |
+| --- | --- | --- |
+| Concurrent checks | 16 | 1–64 |
+| Independent scheduling | Enabled | Enabled / disabled |
+| Separate email queue | Enabled | Enabled / disabled |
+| Concurrent emails | 2 | 1–8 |
+| Email attempt timeout | 30 seconds | 1–120 seconds |
+| New network-check timeout | 5 seconds | 1–60 seconds |
+| New WinRM-check timeout | 30 seconds | 1–60 seconds |
+
+Each monitor retains its own editable interval and timeout. Changing timeout defaults affects newly added monitors and type changes in the editor; existing saved timeouts are retained. Increasing concurrency can use more CPU, memory, network connections, and WinRM helper processes. There is no fixed maximum number of saved checks, but no production capacity guarantee; validate your workload on its deployment PC.
+
+Independent scheduling considers due checks approximately every 250 ms and when work finishes. It starts the oldest completed checks first, up to the configured limit, without waiting for an entire batch. A monitor never has overlapping probes. Intervals are measured from the last completed result, so timeouts and a full worker pool can still make checks late. Disabling independent scheduling waits for the running group to finish before starting the next group.
+
+Separate email delivery uses persisted check results as a latest-state queue, with at most one email in flight per monitor. Email waits do not occupy host-check slots. The worker re-evaluates alert eligibility independently of polling, including after restart; failed deliveries become eligible after five minutes. Repeated failures still follow reminder/suppression settings. A pending failure that recovers before email starts is replaced by the current healthy state; no recovery email is needed if no failure email was delivered. A failure email already in flight can still arrive, followed by recovery when enabled. This queue does not retain every intermediate status transition. Desktop event history continues to record transitions.
+
+Disabling the separate queue sends email within the host-check slot and retries on subsequent polls. The concurrent-email setting applies only to the separate queue. Email timeout applies to both modes and test messages. Settings changes apply automatically: lower limits let current work finish, and scheduling/queue mode changes wait for active work to drain. Shutdown cancels and drains active checks and sends before releasing the database lease. As before, a crash or cancellation after relay acceptance but before recording success can cause a duplicate email.
+
+For 100 simultaneously due checks that all take their full timeout, 16 slots need approximately 7 waves: about **35 seconds with 5-second timeouts** or **3.5 minutes with 30-second timeouts**, plus processing overhead. Add the wait until each check becomes due and actual email relay delivery time. These are calculations, not measured production guarantees. Monitoring and SMTP connectivity must survive the outage for remote email alerts to arrive.

@@ -37,7 +37,7 @@ public sealed class SmtpPanel : UserControl
         try
         {
             var s=Read();Alerts.Validate(s);test.Enabled=false;status.Text="Sending test email…";
-            await Alerts.Send(s,"[Server Monitor] SMTP test",$"SMTP relay test from {Environment.MachineName} at {DateTimeOffset.Now:O}.\r\nServer Monitor can deliver alerts using these settings.",CancellationToken.None);
+            await Alerts.Send(s,"[Server Monitor] SMTP test",$"SMTP relay test from {Environment.MachineName} at {DateTimeOffset.Now:O}.\r\nServer Monitor can deliver alerts using these settings.",CancellationToken.None,store.Monitoring().EmailTimeoutSeconds);
             status.ForeColor=Color.DarkGreen;status.Text="Test email accepted by the relay. Save settings to apply them to monitoring.";store.Event("SMTP","Test email sent","Relay accepted the test message.");
         }
         catch(Exception ex){status.ForeColor=Color.Firebrick;status.Text="Delivery failed: "+ex.Message;}

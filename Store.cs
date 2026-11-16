@@ -25,6 +25,7 @@ public sealed class Store(string path)
           LastAlertStatus TEXT NOT NULL DEFAULT '', LastAlert TEXT, LastAttempt TEXT);
         CREATE TABLE IF NOT EXISTS SnmpCatalog(Oid TEXT PRIMARY KEY, Json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS Settings(Id INTEGER PRIMARY KEY CHECK(Id=1), Json TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS MonitoringSettings(Id INTEGER PRIMARY KEY CHECK(Id=1), Json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS Events(Id INTEGER PRIMARY KEY, At TEXT NOT NULL, Name TEXT NOT NULL, Status TEXT NOT NULL, Detail TEXT NOT NULL, Problem INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS Lease(Id INTEGER PRIMARY KEY CHECK(Id=1), Owner TEXT NOT NULL, UntilUtc TEXT NOT NULL);
         """;
@@ -113,6 +114,16 @@ public sealed class Store(string path)
     public SmtpSettings Settings() { using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT Json FROM Settings WHERE Id=1";return cmd.ExecuteScalar() is string s?JsonSerializer.Deserialize<SmtpSettings>(s)??new():new(); }
     public void SaveSettings(SmtpSettings s) { using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText="INSERT INTO Settings(Id,Json) VALUES(1,$j) ON CONFLICT(Id) DO UPDATE SET Json=excluded.Json";Param(cmd,"$j",JsonSerializer.Serialize(s));cmd.ExecuteNonQuery(); }
     public bool Current(MonitorCheck check) => Checks().Any(c=>c.Id==check.Id && c.Revision==check.Revision && c.Enabled);
+    public MonitoringSettings Monitoring()
+    {
+        using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT Json FROM MonitoringSettings WHERE Id=1";
+        return (cmd.ExecuteScalar() is string json?System.Text.Json.JsonSerializer.Deserialize<MonitoringSettings>(json)??new():new MonitoringSettings()).Normalize();
+    }
+    public void SaveMonitoring(MonitoringSettings settings)
+    {
+        using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText="INSERT INTO MonitoringSettings(Id,Json) VALUES(1,$j) ON CONFLICT(Id) DO UPDATE SET Json=excluded.Json";
+        Param(cmd,"$j",System.Text.Json.JsonSerializer.Serialize(settings.Normalize()));cmd.ExecuteNonQuery();
+    }
     public void AlertAttempt(MonitorCheck check,bool sent,string status)
     {
         using var c=Open();using var cmd=c.CreateCommand();cmd.CommandText=sent?"UPDATE Checks SET LastAttempt=$at,LastAlert=$at,LastAlertStatus=$s WHERE Id=$id AND Revision=$rev":"UPDATE Checks SET LastAttempt=$at WHERE Id=$id AND Revision=$rev";

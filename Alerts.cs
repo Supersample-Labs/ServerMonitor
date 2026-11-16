@@ -37,12 +37,12 @@ public static class Alerts
         if(!new[]{"StartTls","SslOnConnect","None"}.Contains(s.Security))throw new ArgumentException("Select an SMTP encryption mode.");
     }
     static List<MailboxAddress> Recipients(SmtpSettings s)=>s.Recipients.Split([';',','],StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Select(MailboxAddress.Parse).ToList();
-    public static async Task Send(SmtpSettings s,string subject,string body,CancellationToken ct)
+    public static async Task Send(SmtpSettings s,string subject,string body,CancellationToken ct,int timeoutSeconds=30)
     {
-        Validate(s);using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        Validate(s);using var deadline=CancellationTokenSource.CreateLinkedTokenSource(ct);deadline.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         var msg=new MimeMessage();msg.From.Add(MailboxAddress.Parse(s.From));foreach(var recipient in Recipients(s))msg.To.Add(recipient);
         msg.Subject=subject;msg.Body=new TextPart("plain") {Text=body};
-        using var client=new MailKit.Net.Smtp.SmtpClient {Timeout=30000};
+        using var client=new MailKit.Net.Smtp.SmtpClient {Timeout=timeoutSeconds*1000};
         var options=s.Security switch {"SslOnConnect"=>SecureSocketOptions.SslOnConnect,"None"=>SecureSocketOptions.None,_=>SecureSocketOptions.StartTls};
         await client.ConnectAsync(s.Host,s.Port,options,deadline.Token);
         if(!string.IsNullOrWhiteSpace(s.Username))await client.AuthenticateAsync(s.Username,Secret.Unprotect(s.ProtectedPassword),deadline.Token);

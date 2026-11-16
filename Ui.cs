@@ -44,8 +44,8 @@ public sealed class CheckDialog : Form
     readonly MonitorCheck original;public MonitorCheck Value {get;private set;}
     public CheckDialog(MonitorCheck? check=null,Store? store=null)
     {
-        database=store;
-        original=check??new(){Kind=CheckKind.HTTPS};Value=original;windows=new(original.Windows);Text=check==null?"Add monitor":"Edit monitor";Font=new("Segoe UI",10);BackColor=Color.White;Size=new(650,790);MinimumSize=new(600,650);StartPosition=FormStartPosition.CenterParent;MinimizeBox=false;MaximizeBox=false;
+        database=store;var defaults=store?.Monitoring()??new MonitoringSettings();
+        original=check??new(){Kind=CheckKind.HTTPS,TimeoutSeconds=defaults.DefaultTimeoutSeconds};Value=original;windows=new(original.Windows);Text=check==null?"Add monitor":"Edit monitor";Font=new("Segoe UI",10);BackColor=Color.White;Size=new(650,790);MinimumSize=new(600,650);StartPosition=FormStartPosition.CenterParent;MinimizeBox=false;MaximizeBox=false;
         var scroll=new Panel {Dock=DockStyle.Fill,AutoScroll=true,Padding=new(16)};editorPanel=scroll;var grid=Ui.FormGrid();
         Ui.Row(grid,"Display name",name);Ui.Row(grid,"Hostname or IP",host);Ui.Row(grid,"Check type",kind);Ui.Row(grid,"Expiration (local time)",expiration);Ui.Row(grid,"Remote port",port);Ui.Row(grid,"Interval (seconds)",interval);Ui.Row(grid,"Timeout (seconds)",timeout);
         Ui.Row(grid,"TLS server name / SNI",sni);Ui.Row(grid,"HTTPS path",httpPath);Ui.Row(grid,"Accepted HTTP status: min",httpMin);Ui.Row(grid,"Accepted HTTP status: max",httpMax);Ui.Row(grid,"UDP probe",mode);Ui.Row(grid,"UDP payload",payload);Ui.Row(grid,"Payload format",hex);Ui.Row(grid,"Expected reply prefix (hex)",expected);Ui.Row(grid,"SNMP v2c community",community);Ui.Row(grid,"SNMP metric",chooseMetric);Ui.Row(grid,"Metric units",metricInfo);Ui.Row(grid,"Custom / selected OID",oid);Ui.Row(grid,"Threshold direction",snmpDirection);Ui.Row(grid,"Warning threshold",snmpWarning);Ui.Row(grid,"Critical threshold",snmpCritical);Ui.Row(grid,"Minimum alert severity",snmpSeverity);Ui.Row(grid,"Windows resources",windows);Ui.Row(grid,"Source PC readiness",checkSource);Ui.Row(grid,"Test access / readings",testWindows);Ui.Row(grid,"",enabled);
@@ -62,7 +62,7 @@ public sealed class CheckDialog : Form
         oid.TextChanged+=(_,_)=>{metricName="";metricUnits="";UpdateMetricInfo();};
         chooseMetric.Click+=(_,_)=>{using var picker=new SnmpMetricDialog(database,host.Text.Trim().Trim('[',']'),(int)port.Value,community.Text,(int)timeout.Value);if(picker.ShowDialog(this)==DialogResult.OK && picker.Value is {} selected){oid.Text=selected.Oid;metricName=selected.Name;metricUnits=selected.Units;UpdateMetricInfo();}};
         if(original.ManualExpiration.HasValue)expiration.Value=original.ManualExpiration.Value.LocalDateTime;
-        kind.SelectedIndexChanged+=(_,_)=>{if(check==null || kind.SelectedIndex==6)port.Value=kind.SelectedIndex==6?(windows.UseSsl?5986:5985):kind.SelectedIndex==5?161:kind.SelectedIndex==1?53:443;if(kind.SelectedIndex==6)timeout.Value=30;UpdateFields();};mode.SelectedIndexChanged+=(_,_)=>UpdateFields();windows.TransportChanged+=(_,_)=>{if(kind.SelectedIndex==6)port.Value=windows.UseSsl?5986:5985;};UpdateFields();
+        kind.SelectedIndexChanged+=(_,_)=>{if(check==null || kind.SelectedIndex==6)port.Value=kind.SelectedIndex==6?(windows.UseSsl?5986:5985):kind.SelectedIndex==5?161:kind.SelectedIndex==1?53:443;timeout.Value=kind.SelectedIndex==6?defaults.DefaultWindowsTimeoutSeconds:defaults.DefaultTimeoutSeconds;UpdateFields();};mode.SelectedIndexChanged+=(_,_)=>UpdateFields();windows.TransportChanged+=(_,_)=>{if(kind.SelectedIndex==6)port.Value=windows.UseSsl?5986:5985;};UpdateFields();
     }
     void UpdateMetricInfo(){metricInfo.Text=metricName.Length==0?"Custom OID; thresholds use raw values.":metricName+" — "+metricUnits+" (raw values)";}
     static void ShowRow(Control control,bool visible)

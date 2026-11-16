@@ -80,6 +80,20 @@ public sealed record SmtpSettings
     public bool Recovery { get; set; } = true;
 }
 public sealed record MonitorEvent(long Id, DateTimeOffset At, string Name, string Status, string Detail, bool Problem, bool Notify = true);
+public sealed record MonitoringSettings
+{
+    public int ConcurrentChecks { get; set; } = 16;
+    public bool IndependentScheduling { get; set; } = true;
+    public bool SeparateAlerts { get; set; } = true;
+    public int ConcurrentEmails { get; set; } = 2;
+    public int EmailTimeoutSeconds { get; set; } = 30;
+    public int DefaultTimeoutSeconds { get; set; } = 5;
+    public int DefaultWindowsTimeoutSeconds { get; set; } = 30;
+    public MonitoringSettings Normalize() => this with {
+        ConcurrentChecks=Math.Clamp(ConcurrentChecks,1,64),ConcurrentEmails=Math.Clamp(ConcurrentEmails,1,8),
+        EmailTimeoutSeconds=Math.Clamp(EmailTimeoutSeconds,1,120),DefaultTimeoutSeconds=Math.Clamp(DefaultTimeoutSeconds,1,60),
+        DefaultWindowsTimeoutSeconds=Math.Clamp(DefaultWindowsTimeoutSeconds,1,60)};
+}
 public static class Paths
 {
     public static string DirectoryPath => AppContext.BaseDirectory;
