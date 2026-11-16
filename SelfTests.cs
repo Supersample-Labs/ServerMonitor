@@ -23,6 +23,7 @@ public static class SelfTests
         var now=DateTimeOffset.UtcNow;var clear=SslPolicyErrors.None;
         await SnmpTests(folder,now);
         await WindowsTests(folder,now);
+        await SourceReadinessTests();
         Assert(Probes.CertificateResult(now.AddDays(31),now.AddDays(-1),clear,now,1).Status==Health.Healthy,"Certificate >30 days is green");
         Assert(Probes.CertificateResult(now.AddDays(30),now.AddDays(-1),clear,now,1).Status==Health.Expiring,"Certificate exactly 30 days is red");
         Assert(Probes.CertificateResult(now.AddSeconds(-1),now.AddDays(-1),clear,now,1).Status==Health.Expired,"Expired certificate is red");
@@ -133,11 +134,96 @@ public static class SelfTests
         using(var window=new MainForm(store,false))
             Assert(dialog.Controls.Count>0 && settings.Controls.Count>0 && window.Controls.Count>0,"WinForms monitor, SMTP, and dashboard constructors initialize successfully");
         // Construct WinForms only after asynchronous checks: controls may install a synchronization context without a message loop.
+        string savedCiphertext=Secret.Protect("password-retention-test");
+        Assert(Secret.KeepOrReplacePassword(savedCiphertext,@"SURFACE\Administrator",@"surface\administrator","",windowsAccount:true)==savedCiphertext,"Windows credential survives a blank edit and account-name casing changes");
+        Assert(Secret.KeepOrReplacePassword(savedCiphertext,"user","different","",windowsAccount:true)=="","Changing Windows accounts does not reuse the previous account's password");
+        string replaced=Secret.KeepOrReplacePassword(savedCiphertext,"user","user","replacement-test");
+        Assert(replaced!="replacement-test" && Secret.Unprotect(replaced)=="replacement-test","Entered replacement password is encrypted before persistence");
+        Assert(Secret.KeepOrReplacePassword(savedCiphertext,"user","user","",remove:true)=="","Explicit password removal clears the saved credential");
+        var smtpCredentials=new SmtpSettings{Username="smtp-test-user",ProtectedPassword=savedCiphertext};store.SaveSettings(smtpCredentials);
+        using(var smtpEditor=new SmtpPanel(store))Assert(smtpEditor.Read().ProtectedPassword==savedCiphertext,"SMTP connection edits retain a saved password without re-entry");
         var windowsSaved=new WindowsServerSettings{UseWorkerAccount=false,Username=@"DOMAIN\monitor",ProtectedPassword=Secret.Protect("test-only-password")};
-        using(var panel=new WindowsSettingsPanel(windowsSaved))Assert(panel.Value()==windowsSaved,"Editing Windows settings preserves the saved password when blank");
+        using(var panel=new WindowsSettingsPanel(windowsSaved))
+        {
+            Assert(panel.Value()==windowsSaved,"Editing Windows settings preserves the saved password when blank");
+            IEnumerable<Control> Descendants(Control root){foreach(Control child in root.Controls){yield return child;foreach(var nested in Descendants(child))yield return nested;}}
+            var user=Descendants(panel).OfType<TextBox>().Single(t=>t.AccessibleName=="Windows username");
+            var password=Descendants(panel).OfType<TextBox>().Single(t=>t.AccessibleName=="Windows password");
+            Assert(password.PlaceholderText.Contains("Saved password"),"Windows edit form visibly indicates that a password is already saved");
+            user.Text=user.Text.ToLowerInvariant();Assert(panel.Value().ProtectedPassword==windowsSaved.ProtectedPassword,"Editing username casing retains the existing Windows credential");
+            password.Text="replacement-ui-test";Assert(Secret.Unprotect(panel.Value().ProtectedPassword)=="replacement-ui-test","Windows edit form replaces a password only when a new one is entered");
+        }
         using(var windowsDialog=new CheckDialog(new(){Kind=CheckKind.WindowsServer,Host="server.example.test",Windows=windowsSaved}))Assert(windowsDialog.Controls.Count>0,"Windows server monitor dialog initializes");
         using(var picker=new SnmpMetricDialog(new Store(Path.Combine(folder,"snmp.db")),"127.0.0.1",161,"public",1))Assert(picker.Controls.Count>0,"SNMP metric picker initializes with persisted catalog");
+        using(var details=new DetailsViewer())
+        {
+            string longResult="CPU: 53%; Memory: 71%; "+new string('x',50000)+"; Disk Z: 95% used";
+            Assert(DetailsViewer.Format("CPU: 53% (Healthy; warning 80%); Memory: 71%").Contains("(Healthy; warning 80%);"+Environment.NewLine+"Memory"),"Resource readings stay on separate lines with thresholds kept together");
+            details.ShowDetails("All readings",longResult);
+            Assert(details.FullText.Length>50000 && details.FullText.Contains("Disk Z: 95% used") && details.FullText.Contains(Environment.NewLine),"Full details viewer retains long results and separates check readings");
+            TextBox? FindTextBox(Control parent){foreach(Control child in parent.Controls){if(child is TextBox text)return text;var nested=FindTextBox(child);if(nested!=null)return nested;}return null;}
+            var textbox=FindTextBox(details)!;textbox.Select(10,5);details.ShowDetails("All readings",longResult);
+            Assert(textbox.SelectionStart==10 && textbox.SelectionLength==5,"Unchanged refresh preserves details text selection");
+        }
+        using(var commandsViewer=new DetailsViewer(false,false)){string script=WinRmSource.SetupCommands("surface",false);commandsViewer.ShowDetails("Setup commands",script);Assert(commandsViewer.FullText==script,"Setup command viewer preserves executable text exactly");}
+        using(var sourceDialog=new WinRmSourceDialog("surface",false,false))Assert(sourceDialog.Controls.Count>0,"Source PC readiness dialog initializes without changing configuration");
         log.Add("Service install/remove is implemented but not executed by self-tests; no permanent service changes were made.");
+    }
+    static async Task SourceReadinessTests()
+    {
+        var ready=new WinRmSourceSnapshot("5.1",true,"Running","Automatic","surface,server.example.test",true);
+        Assert(!WinRmSource.NeedsAttention(ready,"surface",false),"WinRM source readiness accepts available CIM, running service, and named HTTP trust");
+        Assert(WinRmSource.NeedsAttention(ready with{ServiceStatus="Stopped"},"surface",false),"WinRM source readiness identifies a stopped local service");
+        Assert(WinRmSource.NeedsAttention(ready with{CimAvailable=false},"surface",true),"WinRM source readiness identifies missing CIM cmdlets");
+        Assert(WinRmSource.NeedsAttention(ready,"other",false) && !WinRmSource.NeedsAttention(ready,"other",true),"HTTP trust is checked separately from HTTPS certificate authentication");
+        Assert(!WinRmSource.IsTrusted("surface2","surface") && WinRmSource.IsTrusted(" SERVER.EXAMPLE.TEST , *.example.net ","server.example.test") && WinRmSource.IsTrusted("*.example.net","one.example.net"),"TrustedHosts matching respects names, whitespace, case, and wildcard entries");
+        Assert(WinRmSource.NeedsAttention(ready with{TrustedHostsReadable=false},"surface",false),"Unreadable source trust is reported as unknown, not ready");
+        string commands=WinRmSource.SetupCommands("surface",false);
+        Assert(commands.Contains("'surface'") && commands.Contains("-Concatenate") && commands.Contains("Start-Service") && !commands.Contains("quickconfig") && !commands.Contains("Enable-PSRemoting"),"Source setup commands preserve trust and avoid creating listeners");
+        Assert(!WinRmSource.SetupCommands("surface",true).Contains("Set-Item"),"HTTPS source setup does not modify TrustedHosts");
+        bool invalid=false;try{WinRmSource.SetupCommands("surface';throw 'bad",false);}catch(ArgumentException){invalid=true;}Assert(invalid,"Invalid destinations cannot become setup commands");
+        Assert(WinRmSource.Report(ready,"surface",false,true).Contains("LocalService") && WinRmSource.Report(ready,"surface",false,false).Contains("Inspection account"),"Readiness report distinguishes desktop inspection and service account access");
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        Assert(WinRmSource.NeedsAttention(ready with{StartupType="Manual"},"surface",false),"Automatic readiness check identifies startup mode that needs unattended setup");
+        foreach(var arguments in new[]{new[]{WinRmSourceSetup.Action,"http","surface"},new[]{WinRmSourceSetup.Action,"https","server.example.test"}})
+            Assert(WinRmSourceSetup.ParseArguments(arguments).Host==arguments[2],"Elevated setup accepts only a destination and transport");
+        foreach(var arguments in new[]{new[]{WinRmSourceSetup.Action,"http","*"},new[]{WinRmSourceSetup.Action,"http","surface';throw 'bad"},new[]{WinRmSourceSetup.Action,"ftp","surface"},new[]{WinRmSourceSetup.Action,"http","surface","extra"}})
+        {
+            bool rejected=false;try{WinRmSourceSetup.ParseArguments(arguments);}catch(ArgumentException){rejected=true;}Assert(rejected,"Elevated setup rejects wildcard, injection, unexpected mode, or extra arguments");
+        }
+        var elevation=WinRmSourceSetup.ElevationStartInfo(Path.Combine(AppContext.BaseDirectory,"ServerMonitor.exe"),"surface",false);
+        Assert(elevation.UseShellExecute && elevation.Verb=="runas" && elevation.ArgumentList.SequenceEqual(new[]{WinRmSourceSetup.Action,"http","surface"}),"Configure this PC requests UAC for a constrained helper without credentials or script arguments");
+        const string setupMocks="""
+        Add-Type -AssemblyName System.ServiceProcess
+        $script:trusted='existing.example.test';$script:additions=0;$script:startup='Manual';$script:running='Stopped'
+        function Set-Service { param($Name,$StartupType,$ErrorAction) if($Name -ne 'WinRM'){throw 'Unexpected service'};$script:startup=$StartupType }
+        function Start-Service { param($Name,$ErrorAction) if($Name -ne 'WinRM'){throw 'Unexpected service'};$script:running='Running' }
+        function Get-Service {
+            param($Name,$ErrorAction)
+            $service=[pscustomobject]@{Status=$script:running;StartType=$script:startup}
+            $service | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value {param($status,$timeout) if($this.Status -ne [string]$status){throw 'Service did not start'}}
+            $service | Add-Member -MemberType ScriptMethod -Name Refresh -Value {}
+            return $service
+        }
+        function Get-Item {param($Path,$ErrorAction) if($Path -ne 'WSMan:\localhost\Client\TrustedHosts'){throw 'Unexpected setting'};[pscustomobject]@{Value=$script:trusted} }
+        function Set-Item {
+            param($Path,$Value,[switch]$Concatenate,[switch]$Force,$ErrorAction)
+            if($Path -ne 'WSMan:\localhost\Client\TrustedHosts' -or $Value -ne 'surface' -or -not $Concatenate -or -not $Force){throw 'Unexpected trust change'}
+            $script:trusted+=','+$Value;$script:additions++
+        }
+        """;
+        string configured=WinRmSourceSetup.ConfigurationScript("surface",false);
+        var setupRun=await WindowsProbe.Execute(setupMocks+"\ntry {\n"+configured+"\n"+configured+"\n[Console]::Out.WriteLine('TRUST='+$script:trusted+';ADDS='+$script:additions)\n} catch {[Console]::Out.WriteLine($_.Exception.Message);exit 1}","{}",deadline.Token);
+        Assert(setupRun.ExitCode==0 && setupRun.Output.Contains(WinRmSourceSetup.SuccessMarker) && setupRun.Output.Contains("TRUST=existing.example.test,surface;ADDS=1"),"Mocked elevated setup preserves existing trust, adds one exact host, verifies startup, and is idempotent: "+setupRun.Output);
+        string https=WinRmSourceSetup.ConfigurationScript("surface",true);
+        var httpsRun=await WindowsProbe.Execute(setupMocks+"\n"+https+"\n[Console]::Out.WriteLine('ADDS='+$script:additions)","{}",deadline.Token);
+        Assert(httpsRun.ExitCode==0 && httpsRun.Output.Contains("ADDS=0"),"Mocked HTTPS setup starts the service without modifying TrustedHosts");
+        var rejectedRun=await WindowsProbe.Execute(setupMocks+"\nfunction Set-Service {throw 'Mock policy blocks this change'}\n"+configured,"{}",deadline.Token);
+        Assert(rejectedRun.ExitCode!=0 && !rejectedRun.Output.Contains(WinRmSourceSetup.SuccessMarker),"Blocked setup is not reported as successful");
+        var local=await WinRmSource.Inspect(deadline.Token);
+        Assert(local.PowerShellVersion.StartsWith("5.1",StringComparison.Ordinal) && local.CimAvailable,"Read-only source inspection executes Windows PowerShell and verifies real CIM cmdlets");
+        string syntaxScript="$tokens=$null;$errors=$null;[void][System.Management.Automation.Language.Parser]::ParseInput([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"+Convert.ToBase64String(Encoding.UTF8.GetBytes(commands))+"')),[ref]$tokens,[ref]$errors);if($errors.Count){exit 1};[Console]::Out.WriteLine('valid')";
+        var syntax=await WindowsProbe.Execute(syntaxScript,"{}",deadline.Token);Assert(syntax.ExitCode==0 && syntax.Output.Contains("valid"),"Generated source setup commands parse without being executed");
     }
     static async Task WindowsTests(string folder,DateTimeOffset now)
     {

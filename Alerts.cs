@@ -17,6 +17,13 @@ public static class Secret
         try {Marshal.Copy(bytes,0,input.Data,bytes.Length);var ok=protect?CryptProtectData(ref input,"Server Monitor SMTP",IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,5,out output):CryptUnprotectData(ref input,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,1,out output);if(!ok)throw new Win32Exception(Marshal.GetLastWin32Error());var result=new byte[output.Size];Marshal.Copy(output.Data,result,0,result.Length);return result;}
         finally {for(int i=0;i<bytes.Length;i++)Marshal.WriteByte(input.Data,i,0);Marshal.FreeHGlobal(input.Data);if(output.Data!=IntPtr.Zero)LocalFree(output.Data);}
     }
+    public static bool SameAccount(string previous,string current,bool windowsAccount=false) => string.Equals(previous.Trim(),current.Trim(),windowsAccount?StringComparison.OrdinalIgnoreCase:StringComparison.Ordinal);
+    public static string KeepOrReplacePassword(string previousProtected,string previousUser,string currentUser,string enteredPassword,bool remove=false,bool windowsAccount=false)
+    {
+        if(remove || string.IsNullOrWhiteSpace(currentUser))return "";
+        if(enteredPassword.Length>0)return Protect(enteredPassword);
+        return SameAccount(previousUser,currentUser,windowsAccount)?previousProtected:"";
+    }
     public static string Protect(string value)=>string.IsNullOrEmpty(value)?"":Convert.ToBase64String(Transform(Encoding.UTF8.GetBytes(value),true));
     public static string Unprotect(string value)=>string.IsNullOrEmpty(value)?"":Encoding.UTF8.GetString(Transform(Convert.FromBase64String(value),false));
 }

@@ -26,7 +26,7 @@ public sealed class CheckDialog : Form
     readonly TextBox name=new(),host=new(),sni=new(),httpPath=new(){Text="/"},payload=new(){Multiline=true,Height=65,ScrollBars=ScrollBars.Vertical},expected=new();
     readonly ComboBox kind=Ui.Combo("TCP","UDP","Certificate","HTTPS","Private Certificate","SNMP","Windows Server (WinRM)"),mode=Ui.Combo("DNS","Custom");
     readonly WindowsSettingsPanel windows;
-    readonly Button testWindows=Ui.Button("Test Windows resources");
+    readonly Button testWindows=Ui.Button("Test Windows resources"),checkSource=Ui.Button("Check this PC for WinRM");
     readonly CancellationTokenSource dialogLifetime=new();
     readonly Store? database;
     readonly Button chooseMetric=Ui.Button("Choose / discover metric");
@@ -39,19 +39,22 @@ public sealed class CheckDialog : Form
     readonly NumericUpDown httpMin=Ui.Number(200,200,599),httpMax=Ui.Number(399,200,599);
     readonly NumericUpDown port=Ui.Number(443,1,65535),interval=Ui.Number(60,5,86400),timeout=Ui.Number(5,1,60);
     readonly CheckBox enabled=new(){Text="Enable this monitor",Checked=true,AutoSize=true},hex=new(){Text="Payload is hexadecimal",AutoSize=true};
+    readonly Button saveButton;
+    Panel? editorPanel;bool saving;
     readonly MonitorCheck original;public MonitorCheck Value {get;private set;}
     public CheckDialog(MonitorCheck? check=null,Store? store=null)
     {
         database=store;
         original=check??new(){Kind=CheckKind.HTTPS};Value=original;windows=new(original.Windows);Text=check==null?"Add monitor":"Edit monitor";Font=new("Segoe UI",10);BackColor=Color.White;Size=new(650,790);MinimumSize=new(600,650);StartPosition=FormStartPosition.CenterParent;MinimizeBox=false;MaximizeBox=false;
-        var scroll=new Panel {Dock=DockStyle.Fill,AutoScroll=true,Padding=new(16)};var grid=Ui.FormGrid();
+        var scroll=new Panel {Dock=DockStyle.Fill,AutoScroll=true,Padding=new(16)};editorPanel=scroll;var grid=Ui.FormGrid();
         Ui.Row(grid,"Display name",name);Ui.Row(grid,"Hostname or IP",host);Ui.Row(grid,"Check type",kind);Ui.Row(grid,"Expiration (local time)",expiration);Ui.Row(grid,"Remote port",port);Ui.Row(grid,"Interval (seconds)",interval);Ui.Row(grid,"Timeout (seconds)",timeout);
-        Ui.Row(grid,"TLS server name / SNI",sni);Ui.Row(grid,"HTTPS path",httpPath);Ui.Row(grid,"Accepted HTTP status: min",httpMin);Ui.Row(grid,"Accepted HTTP status: max",httpMax);Ui.Row(grid,"UDP probe",mode);Ui.Row(grid,"UDP payload",payload);Ui.Row(grid,"Payload format",hex);Ui.Row(grid,"Expected reply prefix (hex)",expected);Ui.Row(grid,"SNMP v2c community",community);Ui.Row(grid,"SNMP metric",chooseMetric);Ui.Row(grid,"Metric units",metricInfo);Ui.Row(grid,"Custom / selected OID",oid);Ui.Row(grid,"Threshold direction",snmpDirection);Ui.Row(grid,"Warning threshold",snmpWarning);Ui.Row(grid,"Critical threshold",snmpCritical);Ui.Row(grid,"Minimum alert severity",snmpSeverity);Ui.Row(grid,"Windows resources",windows);Ui.Row(grid,"Test access / readings",testWindows);Ui.Row(grid,"",enabled);
+        Ui.Row(grid,"TLS server name / SNI",sni);Ui.Row(grid,"HTTPS path",httpPath);Ui.Row(grid,"Accepted HTTP status: min",httpMin);Ui.Row(grid,"Accepted HTTP status: max",httpMax);Ui.Row(grid,"UDP probe",mode);Ui.Row(grid,"UDP payload",payload);Ui.Row(grid,"Payload format",hex);Ui.Row(grid,"Expected reply prefix (hex)",expected);Ui.Row(grid,"SNMP v2c community",community);Ui.Row(grid,"SNMP metric",chooseMetric);Ui.Row(grid,"Metric units",metricInfo);Ui.Row(grid,"Custom / selected OID",oid);Ui.Row(grid,"Threshold direction",snmpDirection);Ui.Row(grid,"Warning threshold",snmpWarning);Ui.Row(grid,"Critical threshold",snmpCritical);Ui.Row(grid,"Minimum alert severity",snmpSeverity);Ui.Row(grid,"Windows resources",windows);Ui.Row(grid,"Source PC readiness",checkSource);Ui.Row(grid,"Test access / readings",testWindows);Ui.Row(grid,"",enabled);
         int windowsRow=grid.GetRow(windows);var windowsLabel=grid.Controls.Cast<Control>().Single(c=>grid.GetRow(c)==windowsRow && c!=windows);grid.Controls.Remove(windowsLabel);windowsLabel.Dispose();grid.SetColumn(windows,0);grid.SetColumnSpan(windows,2);
+        checkSource.Click+=(_,_)=>{using var dialog=new WinRmSourceDialog(host.Text.Trim().Trim('[',']'),windows.UseSsl,windows.UseWorkerAccount);dialog.ShowDialog(this);};
         testWindows.Click+=async(_,_)=>await TestWindows();FormClosed+=(_,_)=>dialogLifetime.Cancel();
         note.MaximumSize=new(550,0);note.Padding=new(4,8,4,8);
         var content=new TableLayoutPanel {Dock=DockStyle.Top,AutoSize=true,ColumnCount=1};content.Controls.Add(grid);content.Controls.Add(note);scroll.Controls.Add(content);Controls.Add(scroll);
-        var buttons=new FlowLayoutPanel {Dock=DockStyle.Bottom,Height=60,Padding=new(20,10,10,4),FlowDirection=FlowDirection.RightToLeft};var save=Ui.Button("Save monitor",(_,_)=>Save(),true);var cancel=Ui.Button("Cancel",(_,_)=>{DialogResult=DialogResult.Cancel;Close();});buttons.Controls.AddRange([save,cancel]);Controls.Add(buttons);AcceptButton=save;CancelButton=cancel;
+        var buttons=new FlowLayoutPanel {Dock=DockStyle.Bottom,Height=60,Padding=new(20,10,10,4),FlowDirection=FlowDirection.RightToLeft};saveButton=Ui.Button("Save monitor",async(_,_)=>await Save(),true);var cancel=Ui.Button("Cancel",(_,_)=>{DialogResult=DialogResult.Cancel;Close();});buttons.Controls.AddRange([saveButton,cancel]);Controls.Add(buttons);AcceptButton=saveButton;CancelButton=cancel;
         name.Text=original.Name;host.Text=original.Host;kind.SelectedIndex=(int)original.Kind;port.Value=original.Port;interval.Value=original.IntervalSeconds;timeout.Value=original.TimeoutSeconds;sni.Text=original.TlsName;httpPath.Text=original.HttpPath;httpMin.Value=original.HttpStatusMin;httpMax.Value=original.HttpStatusMax;mode.SelectedItem=original.UdpMode;payload.Text=original.Payload;hex.Checked=original.HexPayload;expected.Text=original.ExpectedHex;enabled.Checked=original.Enabled;
         community.Text=original.Snmp.Community;oid.Text=original.Snmp.Oid;snmpWarning.Value=original.Snmp.Warning;snmpCritical.Value=original.Snmp.Critical;snmpDirection.SelectedIndex=original.Snmp.LowerIsWorse?1:0;snmpSeverity.SelectedItem=original.Snmp.MinimumSeverity;
         metricInfo.MaximumSize=new(340,0);
@@ -71,13 +74,13 @@ public sealed class CheckDialog : Form
     {
         bool snmp=kind.SelectedIndex==5,manual=kind.SelectedIndex==4,udp=kind.SelectedIndex==1,https=kind.SelectedIndex==3;
         foreach(var c in new Control[]{chooseMetric,community,oid,metricInfo,snmpWarning,snmpCritical,snmpDirection,snmpSeverity})ShowRow(c,snmp);
-        ShowRow(windows,kind.SelectedIndex==6);ShowRow(testWindows,kind.SelectedIndex==6);
+        ShowRow(windows,kind.SelectedIndex==6);ShowRow(testWindows,kind.SelectedIndex==6);ShowRow(checkSource,kind.SelectedIndex==6);
         ShowRow(expiration,manual);foreach(var c in new Control[]{host,port,timeout})ShowRow(c,!manual);
         ShowRow(sni,kind.SelectedIndex is 2 or 3);foreach(var c in new Control[]{httpPath,httpMin,httpMax})ShowRow(c,https);
         ShowRow(mode,udp);ShowRow(payload,udp&&mode.Text=="Custom");ShowRow(hex,udp&&mode.Text=="Custom");ShowRow(expected,udp);
         note.Text=kind.SelectedIndex switch
         {
-            6=>"Windows resources use read-only WMI/CIM queries over WinRM. Configure independent CPU, physical memory, and disk percent-used thresholds. Use * for all fixed drive letters or C:, D: for selected drives. The most severe enabled reading sets the status. HTTPS validates the server certificate. The target needs a WinRM listener and an account with remote CIM permissions. Current-account authentication uses the desktop/service worker identity; the default LocalService service account normally cannot authenticate to a remote server. Blank passwords retain a saved credential for the same username.",
+            6=>"Enabled Windows monitors check source readiness when saved. Use Check this PC for WinRM and Configure this PC for one-time administrator setup. Windows resources use read-only WMI/CIM queries over WinRM. Configure independent CPU, physical memory, and disk percent-used thresholds. Use * for all fixed drive letters or C:, D: for selected drives. The most severe enabled reading sets the status. HTTPS validates the server certificate. The target needs a WinRM listener and an account with remote CIM permissions. Current-account authentication uses the desktop/service worker identity; the default LocalService service account normally cannot authenticate to a remote server. Blank passwords retain a saved credential for the same username.",
             5=>"Choose / discover metric opens a searchable catalog with live values and vendor MIB JSON import. Set warning and critical thresholds in the metric's raw units. Counter values are cumulative, not rates, and state codes need appropriate thresholds. Minimum alert severity filters email and desktop notifications; failures still alert unless None is selected. SNMP v2c sends the community unencrypted; use a trusted network.",
             4=>"Private Certificate tracks a manually entered expiration for SAML or internal certificates, without a network connection. It alerts at 30 days or less and when expired. Update the expiration after renewal. Times use this computer's local time zone.",
             3=>"HTTPS connects, inspects the certificate, and GETs the configured path; 200-399 is accepted by default. Direct TLS only, without STARTTLS. Leave SNI blank to use the hostname.",
@@ -92,17 +95,20 @@ public sealed class CheckDialog : Form
         {
             string hostname=host.Text.Trim().Trim('[',']');
             if(Uri.CheckHostName(hostname)==UriHostNameType.Unknown)throw new ArgumentException("Enter a valid server hostname or IP first.");
-            var settings=windows.Value();testWindows.Enabled=false;testWindows.Text="Querying server…";
+            var settings=windows.Value();testWindows.Enabled=false;testWindows.Text="Checking source PC…";
+            var source=await WinRmSource.Inspect(dialogLifetime.Token);
+            if(IsDisposed)return;testWindows.Text="Querying server…";
             var result=await Probes.Run(new(){Kind=CheckKind.WindowsServer,Name=name.Text.Trim(),Host=hostname,Port=(int)port.Value,TimeoutSeconds=(int)timeout.Value,Windows=settings},dialogLifetime.Token);
-            if(!IsDisposed)MessageBox.Show(this,Ui.Display(result.Status)+"\n\n"+result.Detail,"Windows resource test",MessageBoxButtons.OK,result.Problem?MessageBoxIcon.Warning:MessageBoxIcon.Information);
+            if(!IsDisposed){using var details=new DetailsDialog("Windows resource test",Ui.Display(result.Status)+" — "+hostname,result.Detail+"\r\n\r\nSOURCE PC READINESS\r\n"+WinRmSource.Report(source,hostname,settings.UseSsl,settings.UseWorkerAccount));details.ShowDialog(this);}
         }
         catch(OperationCanceledException) when(dialogLifetime.IsCancellationRequested){}
         catch(Exception ex){if(!IsDisposed)MessageBox.Show(this,ex.Message,"Windows resource test",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
         finally{if(!IsDisposed){testWindows.Enabled=true;testWindows.Text="Test Windows resources";}}
     }
     protected override void Dispose(bool disposing){if(disposing){dialogLifetime.Cancel();dialogLifetime.Dispose();}base.Dispose(disposing);}
-    void Save()
+    async Task Save()
     {
+        if(saving)return;
         try
         {
             string hostname=host.Text.Trim().Trim('[',']');
@@ -114,8 +120,22 @@ public sealed class CheckDialog : Form
             var snmp=new SnmpSettings{Community=community.Text,Oid=oid.Text.Trim(),MetricName=metricName,Units=metricUnits,Warning=snmpWarning.Value,Critical=snmpCritical.Value,LowerIsWorse=snmpDirection.SelectedIndex==1,MinimumSeverity=snmpSeverity.Text};
             if(kind.SelectedIndex==5)SnmpProbe.Validate(snmp);
             var win=kind.SelectedIndex==6?windows.Value():original.Windows;
-            Value=original with {Windows=win,Snmp=snmp,Name=name.Text.Trim(),Host=hostname,Port=(int)port.Value,Kind=(CheckKind)kind.SelectedIndex,ManualExpiration=kind.SelectedIndex==4?new DateTimeOffset(DateTime.SpecifyKind(expiration.Value,DateTimeKind.Local)):null,TlsName=sni.Text.Trim(),IntervalSeconds=(int)interval.Value,TimeoutSeconds=(int)timeout.Value,Enabled=enabled.Checked,UdpMode=mode.Text,Payload=payload.Text,HexPayload=hex.Checked,ExpectedHex=expected.Text.Trim(),HttpPath=kind.SelectedIndex==3?Probes.HttpPath(httpPath.Text):original.HttpPath,HttpStatusMin=(int)httpMin.Value,HttpStatusMax=(int)httpMax.Value};DialogResult=DialogResult.OK;Close();
+            var candidate=original with {Windows=win,Snmp=snmp,Name=name.Text.Trim(),Host=hostname,Port=(int)port.Value,Kind=(CheckKind)kind.SelectedIndex,ManualExpiration=kind.SelectedIndex==4?new DateTimeOffset(DateTime.SpecifyKind(expiration.Value,DateTimeKind.Local)):null,TlsName=sni.Text.Trim(),IntervalSeconds=(int)interval.Value,TimeoutSeconds=(int)timeout.Value,Enabled=enabled.Checked,UdpMode=mode.Text,Payload=payload.Text,HexPayload=hex.Checked,ExpectedHex=expected.Text.Trim(),HttpPath=kind.SelectedIndex==3?Probes.HttpPath(httpPath.Text):original.HttpPath,HttpStatusMin=(int)httpMin.Value,HttpStatusMax=(int)httpMax.Value};
+            saving=true;saveButton.Enabled=false;if(editorPanel!=null)editorPanel.Enabled=false;
+            if(candidate.Kind==CheckKind.WindowsServer && candidate.Enabled)
+            {
+                saveButton.Text="Checking this PC…";
+                var source=await WinRmSource.Inspect(dialogLifetime.Token);if(IsDisposed)return;
+                if(WinRmSource.NeedsAttention(source,candidate.Host,candidate.Windows.UseSsl))
+                {
+                    using var setup=new WinRmSourceDialog(candidate.Host,candidate.Windows.UseSsl,candidate.Windows.UseWorkerAccount,duringSave:true);
+                    if(setup.ShowDialog(this)!=DialogResult.OK)return;
+                }
+            }
+            Value=candidate;DialogResult=DialogResult.OK;Close();
         }
-        catch(Exception ex){MessageBox.Show(this,ex.Message,"Check settings",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+        catch(OperationCanceledException) when(dialogLifetime.IsCancellationRequested){}
+        catch(Exception ex){if(!IsDisposed)MessageBox.Show(this,ex.Message,"Check settings",MessageBoxButtons.OK,MessageBoxIcon.Warning);}
+        finally{saving=false;if(!IsDisposed){saveButton.Enabled=true;saveButton.Text="Save monitor";if(editorPanel!=null)editorPanel.Enabled=true;}}
     }
 }

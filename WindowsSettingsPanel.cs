@@ -3,10 +3,11 @@ public sealed class WindowsSettingsPanel : UserControl
 {
     readonly WindowsServerSettings original;
     readonly ComboBox transport=Ui.Combo("HTTPS (certificate validated)","HTTP (Windows authentication)"),identity=Ui.Combo("Use worker's Windows account","Use a specific Windows account"),severity=Ui.Combo("Warning","Critical","None");
-    readonly TextBox username=new(),password=new(){UseSystemPasswordChar=true},drives=new(){Text="*"};
+    readonly TextBox username=new(){AccessibleName="Windows username"},password=new(){UseSystemPasswordChar=true,AccessibleName="Windows password",PlaceholderText="Enter password"},drives=new(){Text="*"};
     readonly Label passwordHint=Ui.Label("Leave password blank to keep the saved password for this username.",9);
     readonly ThresholdEditor cpu,memory,disk;
     public event EventHandler? TransportChanged;
+    public bool UseWorkerAccount => identity.SelectedIndex==0;
     public bool UseSsl => transport.SelectedIndex==0;
     public WindowsSettingsPanel(WindowsServerSettings value)
     {
@@ -18,7 +19,14 @@ public sealed class WindowsSettingsPanel : UserControl
         Ui.Row(grid,"CPU used %",cpu);Ui.Row(grid,"Memory used %",memory);Ui.Row(grid,"Disk used %",disk);Ui.Row(grid,"Drive letters",drives);Ui.Row(grid,"Minimum severity",severity);Controls.Add(grid);
         passwordHint.MaximumSize=new(280,0);
         transport.SelectedIndex=value.UseSsl?0:1;identity.SelectedIndex=value.UseWorkerAccount?0:1;username.Text=value.Username;drives.Text=value.Drives;severity.SelectedItem=value.MinimumSeverity;
+        username.TextChanged+=(_,_)=>UpdatePasswordHint();password.TextChanged+=(_,_)=>UpdatePasswordHint();UpdatePasswordHint();
         identity.SelectedIndexChanged+=(_,_)=>UpdateIdentity();transport.SelectedIndexChanged+=(_,_)=>TransportChanged?.Invoke(this,EventArgs.Empty);UpdateIdentity();
+    }
+    void UpdatePasswordHint()
+    {
+        bool retained=original.ProtectedPassword.Length>0 && Secret.SameAccount(original.Username,username.Text,windowsAccount:true);
+        password.PlaceholderText=retained?"Saved password — leave blank to keep":"Enter password";
+        passwordHint.Text=password.Text.Length>0?"The entered password will replace the saved password when you save.":retained?"Password saved. Leave this field blank to keep it when changing the connection or thresholds.":"Enter a password for this Windows account. Changing accounts requires its password.";
     }
     void UpdateIdentity()
     {
@@ -32,7 +40,7 @@ public sealed class WindowsSettingsPanel : UserControl
     public WindowsServerSettings Value()
     {
         bool worker=identity.SelectedIndex==0;string user=username.Text.Trim();
-        string saved=worker?"":password.Text.Length>0?Secret.Protect(password.Text):user==original.Username?original.ProtectedPassword:"";
+        string saved=worker?"":Secret.KeepOrReplacePassword(original.ProtectedPassword,original.Username,user,password.Text,windowsAccount:true);
         var result=new WindowsServerSettings{UseSsl=UseSsl,UseWorkerAccount=worker,Username=worker?"":user,ProtectedPassword=saved,Cpu=cpu.Value(),Memory=memory.Value(),Disk=disk.Value(),Drives=drives.Text.Trim().ToUpperInvariant(),MinimumSeverity=severity.Text};
         WindowsProbe.Validate(result);return result;
     }

@@ -13,6 +13,7 @@ static class Program
             try{ServiceBase.Run(new MonitorService());return 0;}catch{return 1;}
         }
         ApplicationConfiguration.Initialize();
+        if(args.Length>0 && args[0]==WinRmSourceSetup.Action)return WinRmSourceSetup.RunElevated(args);
         if(args.Contains("--install-service")||args.Contains("--remove-service"))
         {
             try
